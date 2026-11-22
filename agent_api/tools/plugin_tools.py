@@ -20,7 +20,11 @@ PLUGIN = {{"name": "{name}", "description": "{description}"}}
 
 
 def {func}(ctx, args):
-    """工具实现：返回字符串（可直接带 Markdown / MEDIA_IMAGE: 之类标记）。"""
+    """工具实现：返回字符串（可直接带 Markdown / MEDIA_IMAGE: 之类标记）。
+
+    路径别写相对路径：要么给绝对路径，要么
+    from agent_api.security import resolve_in_sandbox 自己解析到 workspace。
+    """
     return "还没实现：这里是 {name} 的入口"
 
 
@@ -95,9 +99,10 @@ def register(registry: ToolRegistry, get_manager: GetManager) -> None:
         manager = get_manager()
         name = str(args.get("name") or "").strip()
         info = manager.read(name)
-        hits = guard.check(info.get("code") or "")
+        code = info.get("code") or ""
+        hits = guard.check(code)
         if hits and not args.get("confirm"):
-            return guard.refusal("plugin_enable", info.get("code") or "", hits)
+            return guard.refusal("plugin_enable", code, hits)
         if not args.get("confirm"):
             return (
                 f"`plugin_enable` 会执行 {name} 的代码（等于在这台机器上跑任意 Python）。\n"
@@ -113,7 +118,7 @@ def register(registry: ToolRegistry, get_manager: GetManager) -> None:
         manager = get_manager()
         result = manager.disable(str(args.get("name") or "").strip())
         removed = ", ".join(result.get("removed_tools") or []) or "（本来就没装载）"
-        return f"插件 {result['name']} 已停用，撑掉工具：{removed}"
+        return f"插件 {result['name']} 已停用，撑下的工具已移除：{removed}"
 
     def plugin_reload(ctx: ToolContext, args: dict[str, Any]) -> str:
         manager = get_manager()
@@ -155,7 +160,7 @@ def register(registry: ToolRegistry, get_manager: GetManager) -> None:
     )
     registry.register(
         "plugin_update",
-        "改写已有插件的代码（整段覆盖）。已启用的插件会立即热重载。",
+        "改写已有插件的代码（整段覆盖）。已启用的插件会立刻热重载。",
         {
             "type": "object",
             "properties": {
@@ -187,7 +192,7 @@ def register(registry: ToolRegistry, get_manager: GetManager) -> None:
     )
     registry.register(
         "plugin_disable",
-        "停用插件并撑掉它注册的工具（文件保留，随时再开）。",
+        "停用插件并移除它注册的工具（文件保留，随时再开）。",
         {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
         plugin_disable,
     )
@@ -199,7 +204,7 @@ def register(registry: ToolRegistry, get_manager: GetManager) -> None:
     )
     registry.register(
         "plugin_delete",
-        "删除插件文件并从注册表撑掉它的工具。要用户同意后带 confirm=true。",
+        "删除插件文件并从注册表移除它的工具。要用户同意后带 confirm=true。",
         {
             "type": "object",
             "properties": {
