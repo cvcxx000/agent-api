@@ -6,6 +6,19 @@
 <meta name="theme-color" content="#faf9f5">
 <title>Agent</title>
 <link rel="stylesheet" href="/ui/app.css">
+<style>
+/* 面板/详情里的表单控件：整行，与全局输入框同款（app.css 的规则只覆盖抽屉和 .panel） */
+#sheetBody input,#sheetBody textarea{display:block;width:100%;box-sizing:border-box;
+  border:1px solid var(--line);border-radius:10px;background:#fff;padding:8px 10px;
+  font:13px/1.5 inherit;color:var(--ink)}
+#sheetBody textarea{min-height:120px;resize:vertical}
+#sheetBody .row2{display:flex;gap:8px;flex-wrap:wrap}
+#sheetBody .row2 input{flex:1 1 130px;min-width:0}
+.mini2{display:inline-block}
+#sheetBody .kv{align-items:flex-start}
+#sheetBody .kv b{flex:0 0 auto;max-width:52%;white-space:nowrap}
+#sheetBody .kv span{flex:1;text-align:right;word-break:break-all}
+</style>
 
 </head>
 <body>

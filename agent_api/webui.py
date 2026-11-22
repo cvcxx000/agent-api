@@ -1,11 +1,11 @@
-"""页面服务：/ui 返回 page.html，css / js 作为独立文件给（浏览器可缓存，改完重启即可）。
+"""页面服务：/ui 返回 page.html，css / js 作为独立文件给。
 
+页面和资源都不缓存（no-cache），git pull 之后刷新页面即可生效。
 页面本身不带任何第三方依赖，所有 JSON 接口由 ui_api.mount() 挂上。
 """
 
 from __future__ import annotations
 
-from functools import lru_cache
 from pathlib import Path
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
@@ -21,8 +21,8 @@ _CONTENT_TYPES = {
 }
 
 
-@lru_cache(maxsize=None)
 def _load(name: str) -> bytes:
+    """每次请求现读磁盘：git pull 之后刷新页面就生效，不必重启。"""
     return (UI_DIR / name).read_bytes()
 
 
@@ -31,9 +31,14 @@ def mount(router) -> None:
     from .ui_api import mount as mount_api
 
     def page(req, params):
-        return Response(200, _load("page.html"), content_type=_CONTENT_TYPES["page.html"])
+        return Response(
+            200,
+            _load("page.html"),
+            headers={"Cache-Control": "no-cache"},
+            content_type=_CONTENT_TYPES["page.html"],
+        )
 
-    def make(name: str):
+    def make(name):
         def handler(req, params):
             return Response(
                 200,
