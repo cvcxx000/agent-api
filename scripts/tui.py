@@ -16,6 +16,7 @@
     /video 提示词     直接生成视频（异步，会等）
     /md 路径          把 workspace 里的 Markdown 渲染到终端
     /file 路径        看纯文本
+    /see 图片路径     把本地图片发给模型看图（下一句自动带上）
     /sessions        列出会话，输编号切换
     /quit            退出
 其余输入都会作为一句话发给 Agent，思考/正文/工具调用都是流式打印。
@@ -26,11 +27,13 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import sys
 import textwrap
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 TTY = sys.stdout.isatty()
 
@@ -122,6 +125,9 @@ def render_md(text: str) -> str:
 
 def stream_chat(api: Api, message: str, session: list[str], state: dict) -> None:
     body: dict = {"message": message}
+    attached = state.pop("attached", None) or []
+    if attached:
+        body["attachments"] = attached
     if state.get("session"):
         body["session_id"] = state["session"]
     payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -132,7 +138,10 @@ def stream_chat(api: Api, message: str, session: list[str], state: dict) -> None
     content_open = False
     tools: dict = {}
 
-    print(c(DIM, "你 › ") + message)
+    mark = ""
+    if attached:
+        mark = c(DIM, " [图 " + ", ".join(str(a.get("name") or a.get("path")) for a in attached) + "]")
+    print(c(DIM, "你 › ") + message + mark)
     try:
         with urllib.request.urlopen(req, timeout=900) as resp:
             for raw in resp:
@@ -207,6 +216,8 @@ def stream_chat(api: Api, message: str, session: list[str], state: dict) -> None
         think_open = False
         content_open = False
     except urllib.error.HTTPError as exc:
+        if attached:
+            state["attached"] = attached
         print(c(RED, "HTTP " + str(exc.code) + "：" + exc.read().decode("utf-8", "replace")[:300]))
     except urllib.error.URLError as exc:
         print(c(RED, f"连不上：{exc.reason}"))
@@ -250,6 +261,8 @@ def cmd_providers(api: Api) -> None:
             bits.append("当前")
         if not p.get("has_key"):
             bits.append("无 Key")
+        if p.get("vision"):
+            bits.append("看图")
         print(f"· {c(BOLD, p['name'])} {c(DIM, p['base_url'])}  " + c(CYAN, " / ".join(bits)))
         for model in p.get("models", []):
             mark = "*" if p.get("is_active") and p.get("active_model") == model else " "
@@ -332,7 +345,7 @@ HELP = """\
   /help            看这份说明
   /new             新会话
   /model           选提供商和模型（列表挑编号）
-  /providers       列出提供商与模型
+  /providers       列出提供商与模型（带「看图」标记）
   /skills          列出所有技能
   /skill 名字       载入技能到当前会话
   /search 关键词    查搜索服务
@@ -340,6 +353,7 @@ HELP = """\
   /video 提示词     生成视频
   /md 路径          渲染 workspace 里的 Markdown
   /file 路径        看纯文本
+  /see 图片路径     把本地图片发给模型看图
   /sessions        列出会话，输编号切换
   /session         看当前 session id
   /quit            退出
@@ -357,6 +371,7 @@ COMMANDS = [
     ("/video", "出片：/video 海浪慢镜头"),
     ("/md", "渲染 Markdown：/md 笔记.md"),
     ("/file", "看文本：/file 路径"),
+    ("/see", "发图给模型：/see 图片路径"),
     ("/new", "开新会话"),
     ("/sessions", "列出会话并切换"),
     ("/session", "看当前会话 id"),
@@ -454,6 +469,48 @@ def cmd_sessions(api, state):
     print(c(GREEN, "已切到 " + str(picked.get("title") or state["session"])))
 
 
+_LOCAL_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
+
+
+def cmd_see(api: Api, state: dict, path: str) -> None:
+    if not path:
+        print(c(RED, "用法：/see 图片路径（例如 /see ~/storage/pictures/shot.jpg）"))
+        return
+    src = Path(path).expanduser()
+    if not src.is_absolute():
+        src = Path.cwd() / src
+    if not src.exists():
+        print(c(RED, f"找不到文件：{src}"))
+        return
+    mime = _LOCAL_MIME.get(src.suffix.lower())
+    if not mime:
+        print(c(RED, "只收 png / jpg / jpeg / webp / gif"))
+        return
+    raw = src.read_bytes()
+    if not raw:
+        print(c(RED, "文件是空的"))
+        return
+    if len(raw) > 8 * 1024 * 1024:
+        print(c(RED, f"图片 {len(raw) / 1024 / 1024:.1f}MB，超过 8MB，先压一下（或截图小一点）"))
+        return
+    data_url = f"data:{mime};base64," + base64.b64encode(raw).decode("ascii")
+    try:
+        res = api.post("/api/ui/upload", {"data_url": data_url, "name": src.stem})
+    except (RuntimeError, SystemExit) as exc:
+        print(c(RED, str(exc)))
+        return
+    rel = str(res.get("path") or "")
+    if not rel:
+        print(c(RED, "上传失败：服务端没返回 path"))
+        return
+    pending = state.setdefault("attached", [])
+    if len(pending) >= 3:
+        pending.pop(0)
+    pending.append({"path": rel, "name": src.name, "type": "image"})
+    print(c(GREEN, f"已挂上 {src.name}（{len(raw) / 1024:.0f} KB）→ {rel}"))
+    print(c(DIM, "下一句话自动带上这张图，发完清空；最多 3 张同时挂。"))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="agent-api 终端界面")
     parser.add_argument("--base", default="http://127.0.0.1:8000", help="服务地址")
@@ -543,6 +600,12 @@ def main() -> None:
             continue
         if line.startswith("/file"):
             cmd_file(api, line[len("/file"):].strip())
+            continue
+        if line == "/see":
+            print(c(RED, "用法：/see 图片路径"))
+            continue
+        if line.startswith("/see "):
+            cmd_see(api, state, line[len("/see "):].strip())
             continue
         stream_chat(api, line, [], state)
 
