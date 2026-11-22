@@ -1,11 +1,16 @@
-"""终端交互式 REPL：多轮对话、实时看工具调用，纯 urllib 直连本地服务。
+#!/usr/bin/env python3
+"""交互式终端：和 Agent 多轮对话，边干活边看工具调用。
 
 用法：
-    python3 scripts/repl.py                       # 默认连 http://127.0.0.1:8000
-    python3 scripts/repl.py --base http://1.2.3.4:8000 --token abc
+    python3 scripts/repl.py
+    python3 scripts/repl.py --base-url http://127.0.0.1:8000 --token xxx
 
-内置命令：/new 开新会话  /session 看当前会话  /system <文本> 设系统提示词
-           /system- 清空  /help 帮助  /exit 退出
+命令：
+    /new          新建会话（清空上下文）
+    /system X     替换系统提示词（下一轮生效）
+    /session      显示当前 session id
+    /help         帮助
+    /exit 或 Ctrl+C 退出
 """
 
 from __future__ import annotations
@@ -16,149 +21,149 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+BANNER = "输入任务直接回车发送；/help 看命令，/exit 退出。"
 
 
-def parse_sse(response):
-    """逐行读取 chunked SSE，尽量即时打印。"""
-    buffer = ""
-    for raw in response:
-        buffer += raw.decode("utf-8", "replace")
-        while "\n\n" in buffer:
-            block, buffer = buffer.split("\n\n", 1)
-            data = []
-            for line in block.split("\n"):
-                if line.startswith("data:"):
-                    data.append(line[5:].lstrip())
-            if data:
+def env_value(key: str, default: str = "") -> str:
+    if os.getenv(key):
+        return os.environ[key]
+    env_file = ROOT / ".env"
+    if env_file.exists():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, _, v = line.partition("=")
+                if k.strip() == key:
+                    return v.strip().strip('"').strip("'")
+    return default
+
+
+class Client:
+    def __init__(self, base_url: str, token: str):
+        self.base = base_url.rstrip("/")
+        self.token = token
+        self.session_id: str | None = None
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if self.token:
+            headers["X-API-Token"] = self.token
+        return headers
+
+    def _post(self, path: str, body: dict, timeout: float = 900) -> urllib.response.addinfourl:  # type: ignore[name-defined]
+        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(self.base + path, data=data, method="POST", headers=self._headers())
+        return urllib.request.urlopen(request, timeout=timeout)
+
+    def health(self) -> dict:
+        with urllib.request.urlopen(self.base + "/health", timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def set_system_prompt(self, prompt: str) -> None:
+        if not self.session_id:
+            print("（还没有会话，这条提示词会在新建会话时生效）")
+            return
+        self._post(f"/api/sessions/{self.session_id}/system-prompt", {"prompt": prompt, "mode": "replace"}).close()
+        print("已替换系统提示词。")
+
+    def chat(self, message: str) -> None:
+        body: dict = {"message": message}
+        if self.session_id:
+            body["session_id"] = self.session_id
+        printed_tool = False
+        final = ""
+        try:
+            resp = self._post("/api/chat/stream", body)
+        except urllib.error.HTTPError as exc:
+            print(f"HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')[:400]}", file=sys.stderr)
+            return
+        except urllib.error.URLError as exc:
+            print(f"连不上 {self.base}：{exc.reason}", file=sys.stderr)
+            return
+
+        with resp:
+            for raw in resp:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line.startswith("data: "):
+                    continue
                 try:
-                    yield json.loads("\n".join(data))
+                    event = json.loads(line[6:])
                 except json.JSONDecodeError:
                     continue
+                kind = event.get("type")
+                if kind == "tool_call":
+                    if not printed_tool:
+                        print("\n  · 调用工具", flush=True)
+                        printed_tool = True
+                    print(f"\n    {event.get('name')} {json.dumps(event.get('arguments'), ensure_ascii=False)[:160]}", flush=True)
+                elif kind == "tool_result":
+                    text = str(event.get("output") or "").replace("\n", "\n    ")
+                    print(f"    ↳ {text[:400]}", flush=True)
+                elif kind == "assistant" and event.get("content"):
+                    print(f"\n{event['content']}", end="", flush=True)
+                elif kind == "warning":
+                    print(f"\n[提示] {event.get('message')}")
+                elif kind == "error":
+                    print(f"\n[错误] {event.get('message')}")
+                elif kind == "final":
+                    if event.get("session_id"):
+                        self.session_id = event["session_id"]
+                    final = str(event.get("content") or "")
+        print(f"\n\n(session: {self.session_id}, turns: 见上)")
 
 
-def short(text, limit=120):
-    text = "" if text is None else str(text)
-    text = text.replace("\n", "\\n")
-    return text if len(text) <= limit else text[:limit] + "…"
-
-
-def describe(event):
-    kind = event.get("type")
-    if kind == "assistant":
-        content = event.get("content") or ""
-        if content.strip():
-            print(f"\n\033[36m{content}\033[0m", end="", flush=True)
-    elif kind == "tool_call":
-        print(f"\n  \033[33m→ {event.get('name')}\033[0m {short(event.get('arguments'), 160)}", flush=True)
-    elif kind == "tool_result":
-        mark = "✗" if event.get("ok") is False else "✓"
-        print(f"  \033[32m{mark} {short(event.get('output'), 300)}\033[0m", flush=True)
-    elif kind == "warning":
-        print(f"\n  ! {event.get('message')}", flush=True)
-    elif kind == "error":
-        print(f"\n  \033[31m错误：{event.get('message')}\033[0m", flush=True)
-    elif kind == "final":
-        return event
-    return None
-
-
-def run_turn(base, token, session_id, message, system_prompt):
-    body = {"message": message, "stream": True}
-    if session_id:
-        body["session_id"] = session_id
-    if system_prompt:
-        body["system_prompt"] = system_prompt
-    headers = {"Content-Type": "application/json"}
-    if token:
-        headers["X-API-Token"] = token
-    request = urllib.request.Request(
-        base.rstrip("/") + "/api/agent/run",
-        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
-        method="POST",
-        headers=headers,
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=None) as response:
-            final = None
-            for event in parse_sse(response):
-                got = describe(event)
-                if got:
-                    final = got
-            print()
-            return final
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace")[:400]
-        print(f"\033[31m请求失败 HTTP {exc.code}：{detail}\033[0m")
-    except urllib.error.URLError as exc:
-        print(f"\033[31m连不上服务（{base}）：{exc.reason}\033[0m")
-    return None
-
-
-HELP = """
-命令：
-  /new              开一个新会话
-  /session          查看当前 session id
-  /system <文本>    设置本轮起用的系统提示词
-  /system-          取消自定义系统提示词
-  /help             显示帮助
-  /exit 或 /quit    退出
-直接输入内容即为发消息，Ctrl+C 退出。
-"""
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Agent API 交互式终端")
-    parser.add_argument("--base", default=os.getenv("AGENT_BASE", "http://127.0.0.1:8000"))
-    parser.add_argument("--token", default=os.getenv("AGENT_TOKEN", ""))
-    parser.add_argument("--system", default=os.getenv("AGENT_SYSTEM_PROMPT", ""))
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Agent 交互式终端")
+    parser.add_argument("--base-url", default=env_value("API_BASE_URL", "http://127.0.0.1:8000"))
+    parser.add_argument("--token", default=env_value("API_TOKEN", ""))
     args = parser.parse_args()
 
-    base, token = args.base, args.token
-    session_id = ""
-    system_prompt = args.system
+    client = Client(args.base_url, args.token)
+    try:
+        info = client.health()
+        print(f"已连接 {args.base_url} · {info.get('service')} · mock={info.get('mock_llm')}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"连不上 {args.base_url}：{exc}\n先把服务跑起来：python3 run.py", file=sys.stderr)
+        return 1
 
-    print(f"连接 {base} （/help 看命令，/exit 退出）")
+    print(BANNER)
+    pending_system: str | None = None
     while True:
         try:
-            line = input("\033[1m你>\033[0m ").strip()
+            text = input("\n你 > ").strip()
         except (EOFError, KeyboardInterrupt):
-            print()
-            break
-        if not line:
+            print("\n再见。")
+            return 0
+        if not text:
             continue
-        if line in {"/exit", "/quit"}:
-            break
-        if line == "/help":
-            print(HELP)
+        if text in {"/exit", "/quit"}:
+            print("再见。")
+            return 0
+        if text == "/help":
+            print(BANNER + "\n/new  /system <提示词>  /session  /exit")
             continue
-        if line == "/new":
-            session_id = ""
-            print("已开新会话，下一句会建一个新 session。")
+        if text == "/new":
+            client.session_id = None
+            print("已新建会话。")
+            if pending_system:
+                print("（之前待应用的系统提示词请用 /system 重新设置）")
             continue
-        if line == "/session":
-            print(f"当前 session：{session_id or '(未创建)'}")
+        if text == "/session":
+            print(client.session_id or "（还没开始对话）")
             continue
-        if line.startswith("/system-"):
-            system_prompt = ""
-            print("已取消自定义系统提示词。")
+        if text.startswith("/system"):
+            prompt = text[len("/system"):].strip()
+            if not prompt:
+                print("用法：/system 你现在是一个只写中文简短结论的助手")
+                continue
+            client.set_system_prompt(prompt)
+            pending_system = prompt
             continue
-        if line.startswith("/system "):
-            system_prompt = line[len("/system "):].strip()
-            print("系统提示词已更新（本轮起生效）。")
-            continue
-        if line.startswith("/"):
-            print("未知命令，/help 查看。")
-            continue
-
-        final = run_turn(base, token, session_id, line, system_prompt)
-        if final and final.get("session_id"):
-            session_id = final["session_id"]
-
-    print("再见。")
+        client.chat(text)
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        sys.exit(0)
+    raise SystemExit(main())
