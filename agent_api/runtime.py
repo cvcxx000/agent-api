@@ -11,6 +11,7 @@ from .llm import build_llm
 from .prompts import load_default_system_prompt
 from .sessions import SessionStore, SubagentManager
 from .skills import SkillLibrary
+from .plugins import PluginManager
 from .tools import ToolRegistry, build_registry
 from .workflows import WorkflowEngine
 
@@ -26,6 +27,7 @@ class Runtime:
         self.subagents: Any = None
         self.skills: Any = None
         self.workflows: Any = None
+        self.plugins: Any = None
         self.cookie_store: Any = None
         self.registry: ToolRegistry | None = None
 
@@ -62,6 +64,7 @@ def create_runtime(settings: Settings | None = None) -> Runtime:
     runtime.skills = SkillLibrary(st.skills_dirs)
     runtime.subagents = SubagentManager(runtime, st.max_subagents, st.max_subagent_depth)
     runtime.workflows = WorkflowEngine(runtime, st.workflows_dir)
+    runtime.plugins = PluginManager(st)
     runtime.registry = build_registry(runtime)
     logger.info(
         "runtime ready | model=%s mock=%s sandbox=%s tools=%d subagents<=%d",

@@ -56,6 +56,10 @@ class ToolRegistry:
     def names(self) -> list[str]:
         return list(self._specs)
 
+    def unregister(self, name: str) -> bool:
+        """摘掉一个工具（插件热重载/停用时用）。"""
+        return self._specs.pop(name, None) is not None
+
     def get(self, name: str) -> ToolSpec:
         spec = self._specs.get(name)
         if spec is None:
