@@ -26,7 +26,7 @@ def _lookup(data: Any, expr: str) -> Any:
         elif isinstance(current, list) and part.isdigit() and int(part) < len(current):
             current = current[int(part)]
         else:
-            raise ToolError(f"模板变量不存在：{{{{ {expr} }}}}}")
+            raise ToolError(f"模板变量不存在：{{{{ {expr} }}}}")
     return current
 
 
