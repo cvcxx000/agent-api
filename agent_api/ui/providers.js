@@ -174,7 +174,9 @@ function providerCard(p){
         await apiPost('/api/providers/' + encodeURIComponent(p.id) + '/models', { model: m });
         showProviders();
         refreshProviderSummary();
-      }catch (e){ note('添加失败：' + e.message, 'err'); }
+      }catch (e){
+        note('添加失败：' + e.message, 'err');
+      }
     });
     addRow.appendChild(addInp);
     addRow.appendChild(addBtn);
@@ -210,7 +212,29 @@ async function showProviders(){
     const now = el('div', 'dr-tip',
       '当前：' + ((j.current && j.current.model) || '未配置') + '  ' + ((j.current && j.current.base_url) || ''));
     w.appendChild(now);
-    providersCache.forEach(p => w.appendChild(providerCard(p)));
+
+    const search = document.createElement('input');
+    search.type = 'search';
+    search.className = 'psrch';
+    search.placeholder = '搜索提供商';
+    search.autocomplete = 'off';
+    w.appendChild(search);
+
+    const listBox = el('div', 'plist');
+    w.appendChild(listBox);
+    const fill = () => {
+      listBox.innerHTML = '';
+      const q = search.value.trim().toLowerCase();
+      const arr = providersCache.filter(p => {
+        if (!q){ return true; }
+        const hay = (p.name + ' ' + p.id + ' ' + (p.notes || '') + ' ' + (p.base_url || '')).toLowerCase();
+        return hay.indexOf(q) >= 0;
+      });
+      if (!arr.length){ listBox.appendChild(el('div', 'dr-tip', '没有匹配的提供商。')); }
+      arr.forEach(p => listBox.appendChild(providerCard(p)));
+    };
+    fill();
+    search.addEventListener('input', fill);
     w.appendChild(newProviderPanel());
   }catch (e){
     w.innerHTML = '<div class="err">加载失败：' + esc(e.message) + '</div>';
