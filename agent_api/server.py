@@ -236,8 +236,10 @@ class AgentHTTPServer(ThreadingHTTPServer):
 
 def build_server(runtime: Any, host: str | None = None, port: int | None = None) -> AgentHTTPServer:
     from .api import build_router
+    from .webui import mount as mount_webui
 
     router = build_router(runtime)
+    mount_webui(router)
     return AgentHTTPServer((host or settings.host, port or settings.port), router, runtime)
 
 

@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import socket
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -20,6 +22,37 @@ from .utils import new_id
 
 logger = logging.getLogger("agent.llm")
 _RETRY_STATUS = {429, 500, 502, 503, 504}
+
+
+def rate_limit_per_minute() -> int:
+    """读取 RATE_LIMIT_PER_MIN；0 = 不限速。默认 7，给额度很小的测试 Key 用。"""
+    raw = (os.getenv("RATE_LIMIT_PER_MIN") or "7").strip()
+    try:
+        value = int(float(raw))
+    except ValueError:
+        return 7
+    return max(0, value)
+
+
+class _Gate:
+    """全局限速：主 Agent 和所有子 Agent 共用同一个配额，保证不超每分钟上限。"""
+
+    def __init__(self, per_minute: int):
+        self.per_minute = max(0, per_minute)
+        self.interval = 60.0 / self.per_minute if self.per_minute else 0.0
+        self._lock = threading.Lock()
+        self._next_at = 0.0
+
+    def wait(self) -> None:
+        if not self.interval:
+            return
+        with self._lock:
+            now = time.monotonic()
+            delay = self._next_at - now
+            self._next_at = max(now, self._next_at) + self.interval
+        if delay > 0:
+            logger.info("限速：等待 %.1fs（上限 %d 次/分钟）", delay, self.per_minute)
+            time.sleep(delay)
 
 
 class BaseLLM:
@@ -37,6 +70,10 @@ class BaseLLM:
 
 
 class OpenAICompatibleLLM(BaseLLM):
+    def __init__(self, settings: Settings, per_minute: int | None = None):
+        super().__init__(settings)
+        self.gate = _Gate(rate_limit_per_minute() if per_minute is None else per_minute)
+
     def chat(
         self,
         messages: list[dict[str, Any]],
@@ -59,6 +96,7 @@ class OpenAICompatibleLLM(BaseLLM):
         last_error = ""
 
         for attempt in range(3):
+            self.gate.wait()
             request = urllib.request.Request(
                 url,
                 data=data,
@@ -79,6 +117,15 @@ class OpenAICompatibleLLM(BaseLLM):
                 except Exception:  # noqa: BLE001
                     pass
                 last_error = f"HTTP {exc.code}: {detail}"
+                if exc.code == 429:
+                    wait = 0.0
+                    header = exc.headers.get("Retry-After") if exc.headers else None
+                    if header:
+                        try:
+                            wait = float(header)
+                        except ValueError:
+                            wait = 0.0
+                    time.sleep(min(max(wait, 1.0), 60.0))
                 if exc.code not in _RETRY_STATUS:
                     break
             except (socket.timeout, TimeoutError) as exc:
@@ -166,4 +213,4 @@ def build_llm(settings: Settings) -> BaseLLM:
     if settings.use_mock_llm:
         logger.warning("未配置 LLM_API_KEY，当前使用 MockLLM（仅用于联调）")
         return MockLLM(settings)
-    return OpenAICompatibleLLM(settings)
+    return OpenAICompatibleLLM(settings, rate_limit_per_minute())
