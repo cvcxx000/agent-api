@@ -3,23 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#faf9f5">
+<meta name="theme-color" content="#f2f3f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b0b0f" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="format-detection" content="telephone=no">
+<meta name="color-scheme" content="light dark">
 <title>Agent</title>
 <link rel="stylesheet" href="/ui/app.css">
-<style>
-/* 面板/详情里的表单控件：整行，与全局输入框同款（app.css 的规则只覆盖抽屉和 .panel） */
-#sheetBody input,#sheetBody textarea{display:block;width:100%;box-sizing:border-box;
-  border:1px solid var(--line);border-radius:10px;background:#fff;padding:8px 10px;
-  font:13px/1.5 inherit;color:var(--ink)}
-#sheetBody textarea{min-height:120px;resize:vertical}
-#sheetBody .row2{display:flex;gap:8px;flex-wrap:wrap}
-#sheetBody .row2 input{flex:1 1 130px;min-width:0}
-.mini2{display:inline-block}
-#sheetBody .kv{align-items:flex-start}
-#sheetBody .kv b{flex:0 0 auto;max-width:52%;white-space:nowrap}
-#sheetBody .kv span{flex:1;text-align:right;word-break:break-all}
-</style>
-
 </head>
 <body>
 <header>
@@ -75,11 +66,12 @@
   <button class="act" id="btnExport">导出当前会话（Markdown）</button>
   <button class="act" id="btnClearView">清空当前画面</button>
   <div class="dr-tip">会话存在服务端 data/sessions；浏览器只记 session id、token 和设置。模型切换会重建客户端，不写入 .env，重启后回到 .env 的配置。</div>
+  <div class="dr-foot">agent-api · 零依赖 · 跑在本机</div>
 </aside>
 
 <section id="sheet">
   <header>
-    <button class="icon" id="sheetBack" aria-label="返回">←</button>
+    <button class="icon" id="sheetBack" aria-label="返回">‹</button>
     <div class="title" id="sheetTitle">面板<small id="sheetSub"></small></div>
     <button class="pill" id="sheetRefresh">刷新</button>
   </header>
@@ -90,7 +82,7 @@
 
 <footer>
   <div class="composer">
-    <textarea id="input" rows="1" placeholder="让 Agent 干活…（Enter 发送，Shift+Enter 换行）"></textarea>
+    <textarea id="input" rows="1" placeholder="让 Agent 干活…"></textarea>
     <button id="send" title="发送">↑</button>
   </div>
   <div class="hint"><span id="sid">session: -</span><span id="tip">Enter 发送</span></div>

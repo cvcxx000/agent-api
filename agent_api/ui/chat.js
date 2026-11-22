@@ -2,6 +2,8 @@ async function send(){
   if (busy){ return; }
   const raw = $('input').value.trim();
   if (!raw){ return; }
+  const hero = document.querySelector('.hero');
+  if (hero){ hero.remove(); }
   $('input').value = '';
   $('input').style.height = 'auto';
   busy = true;
@@ -110,7 +112,7 @@ $('input').addEventListener('input', () => {
 });
 $('btnMenu').addEventListener('click', () => openDrawer(true));
 $('mask').addEventListener('click', () => openDrawer(false));
-$('btnNew').addEventListener('click', () => { startNew(); openDrawer(false); });
+$('btnNew').addEventListener('click', () => { startNew(); welcomeHero(); openDrawer(false); });
 $('badge').addEventListener('click', () => { openDrawer(false); pushSheet('subagents', '子任务', '最多 3 个并行', null); });
 $('goSkills').addEventListener('click', () => { openDrawer(false); pushSheet('skills', '技能', 'SKILL.md 载入后长期生效', () => showSkills()); });
 $('goWorkflows').addEventListener('click', () => { openDrawer(false); pushSheet('workflows', '工作流', 'JSON 步骤', () => showWorkflows()); });
@@ -148,5 +150,37 @@ refreshStatus();
 refreshProviderSummary();
 refreshSubBadge();
 setInterval(refreshSubBadge, 8000);
-note('准备就绪。☰ 里可以切模型、载技能、跑工作流、看子任务、浏览文件。');
-$('input').focus();
+function welcomeHero(){
+  const box = document.createElement('div');
+  box.className = 'hero';
+  const t = document.createElement('div');
+  t.className = 'hero-t';
+  t.textContent = '今天想让 Agent 做点什么？';
+  const sub = document.createElement('div');
+  sub.className = 'hero-s';
+  sub.textContent = '零依赖 · 跑在本机 · 可读写文件、执行代码、载入技能';
+  box.appendChild(t);
+  box.appendChild(sub);
+  const row = document.createElement('div');
+  row.className = 'hero-chips';
+  const ideas = [
+    ['看一下工作目录', '看一下工作目录里有什么？'],
+    ['写个脚本', '帮我写一个 Python 脚本，统计 workspace 里每个文件的大小'],
+    ['整理文件', '列出 workspace 里最大的 5 个文件，并给出整理建议'],
+  ];
+  ideas.forEach(it => {
+    const b = document.createElement('button');
+    b.className = 'hero-chip';
+    b.textContent = it[0];
+    b.addEventListener('click', () => {
+      $('input').value = it[1];
+      $('input').focus();
+      $('input').dispatchEvent(new Event('input'));
+    });
+    row.appendChild(b);
+  });
+  box.appendChild(row);
+  wrapEl().appendChild(box);
+}
+
+welcomeHero();
