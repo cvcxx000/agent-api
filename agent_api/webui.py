@@ -1,9 +1,12 @@
 """单文件 Web 聊天界面：GET / 与 /ui 返回同一个页面，直接调本服务的 /api/chat/stream。
 
-不依赖任何前端框架和外链 CDN；抽屉里带会话列表、设置项和 Markdown 导出。
+页面自带：会话列表、模型切换、技能载入、工作流运行、子任务监控、文件浏览、Markdown 导出。
+全部是标准库 + 原生 HTML/JS，不依赖任何前端框架和外链 CDN。
 """
 
 from __future__ import annotations
+
+import os
 
 UI_HTML = """<!doctype html>
 <html lang="zh-CN">
@@ -16,7 +19,7 @@ UI_HTML = """<!doctype html>
 :root{
   --bg:#faf9f5; --panel:#f2efe8; --card:#fffdfa; --ink:#23211d; --dim:#7a756c;
   --line:#e4dfd3; --accent:#c96442; --accent-soft:#f3e3db; --code:#fbfaf7;
-  --ok:#4a7a58; --err:#a33b25;
+  --ok:#4a7a58; --err:#a33b25; --warn:#a5760f;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{height:100%;margin:0}
@@ -32,7 +35,7 @@ header{
 }
 header .icon{
   width:36px; height:34px; border:1px solid var(--line); background:#fff; color:var(--ink);
-  border-radius:10px; font-size:16px; line-height:1; cursor:pointer;
+  border-radius:10px; font-size:16px; line-height:1; cursor:pointer; flex:none;
 }
 header .title{font-weight:600; letter-spacing:.02em; flex:1; min-width:0}
 header .title small{display:block; font-weight:400; color:var(--dim); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
@@ -41,19 +44,36 @@ header .pill{
   border-radius:10px; padding:7px 10px; font-size:13px; cursor:pointer; flex:none;
 }
 header .pill:active{transform:scale(.97)}
+header .badge{
+  border:1px solid #d9bfae; background:var(--accent-soft); color:var(--accent);
+  border-radius:10px; padding:6px 8px; font-size:11px; cursor:pointer; flex:none; display:none;
+}
+header .badge.on{display:block}
 
 #mask{position:fixed; inset:0; background:rgba(35,33,29,.28); opacity:0; pointer-events:none; transition:opacity .18s; z-index:20}
 #mask.on{opacity:1; pointer-events:auto}
 #drawer{
-  position:fixed; top:0; left:0; bottom:0; width:min(86vw,340px); z-index:21;
+  position:fixed; top:0; left:0; bottom:0; width:min(86vw,360px); z-index:21;
   background:var(--card); border-right:1px solid var(--line);
   transform:translateX(-102%); transition:transform .2s ease;
   display:flex; flex-direction:column; padding:14px 14px calc(14px + env(safe-area-inset-bottom));
   overflow-y:auto;
 }
 #drawer.on{transform:none}
+
+#sheet{
+  position:fixed; inset:0; z-index:22; background:var(--bg);
+  transform:translateY(102%); transition:transform .22s ease;
+  display:flex; flex-direction:column;
+}
+#sheet.on{transform:none}
+#sheet header{position:static}
+#sheetBody{flex:1; overflow-y:auto; padding:14px 14px calc(20px + env(safe-area-inset-bottom))}
+#sheetBody .wrap{max-width:760px; margin:0 auto}
+
 .dr-head{font-size:12px; color:var(--dim); letter-spacing:.08em; margin:4px 0 8px; display:flex; justify-content:space-between}
 .dr-sep{height:1px; background:var(--line); margin:14px 0}
+.dr-label{font-size:11px; color:var(--dim); margin:10px 0 4px}
 #sessList{display:flex; flex-direction:column; gap:6px}
 .sess{
   border:1px solid var(--line); border-radius:10px; padding:8px 10px; background:#fff;
@@ -63,21 +83,28 @@ header .pill:active{transform:scale(.97)}
 .sess .body{flex:1; min-width:0}
 .sess .t{font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
 .sess .m{font-size:11px; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
-.sess .del{
-  border:0; background:transparent; color:var(--dim); font-size:15px; cursor:pointer; padding:2px 4px; flex:none;
+.sess .del{border:0; background:transparent; color:var(--dim); font-size:15px; cursor:pointer; padding:2px 4px; flex:none}
+
+.grid{display:grid; grid-template-columns:repeat(2,1fr); gap:8px}
+.grid button{
+  border:1px solid var(--line); background:#fff; color:var(--ink); border-radius:10px;
+  padding:10px 8px; font-size:13px; cursor:pointer; text-align:left;
 }
-.sess .del:hover{color:var(--err)}
-.dr-label{font-size:11px; color:var(--dim); margin:10px 0 4px}
-#drawer input,#drawer textarea{
+.grid button b{display:block; font-size:13px}
+.grid button span{font-size:11px; color:var(--dim)}
+
+#drawer input,#drawer textarea,#drawer select,.panel input,.panel select{
   width:100%; border:1px solid var(--line); border-radius:10px; background:#fff;
   padding:8px 10px; font:13px/1.5 inherit; color:var(--ink);
 }
 #drawer textarea{resize:vertical; min-height:64px}
-#drawer .act{
+#drawer .act,.panel .act{
   width:100%; border:1px solid var(--line); background:#fff; color:var(--ink);
   border-radius:10px; padding:9px 10px; font-size:13px; cursor:pointer; margin-top:8px;
 }
-#drawer .act.primary{background:var(--accent); border-color:var(--accent); color:#fff}
+#drawer .act.primary,.panel .act.primary{background:var(--accent); border-color:var(--accent); color:#fff}
+.row2{display:flex; gap:8px}
+.row2 .act{margin-top:8px}
 .dr-tip{font-size:11px; color:var(--dim); line-height:1.5; margin-top:10px}
 
 #log{flex:1; overflow-y:auto; padding:18px 14px 8px; scroll-behavior:smooth}
@@ -123,6 +150,30 @@ header .pill:active{transform:scale(.97)}
 }
 .sysmsg{color:var(--dim); font-size:12px; text-align:center; margin:10px 0}
 .err{color:var(--err); font-size:13px; margin:4px 0}
+
+.panel{
+  border:1px solid var(--line); border-radius:12px; background:#fff; padding:10px 12px; margin:0 0 10px;
+}
+.panel h3{margin:0 0 4px; font-size:14px}
+.panel .meta{font-size:11px; color:var(--dim); margin-bottom:6px; word-break:break-all}
+.panel .desc{font-size:12.5px; color:#57504a; margin-bottom:8px; white-space:pre-wrap}
+.panel .acts{display:flex; gap:8px; flex-wrap:wrap}
+.panel .mini{
+  border:1px solid var(--line); background:#fff; border-radius:8px; padding:5px 10px;
+  font-size:12px; cursor:pointer; color:var(--ink);
+}
+.panel .mini.warn{border-color:#e8cfa8; color:var(--warn)}
+.panel .mini.primary{background:var(--accent); border-color:var(--accent); color:#fff}
+.panel .out{
+  margin-top:8px; border-top:1px dashed var(--line); padding-top:8px;
+  font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;
+  white-space:pre-wrap; word-break:break-word; max-height:280px; overflow:auto; color:#57504a;
+}
+.tagline{display:inline-block; font-size:11px; padding:1px 6px; border-radius:5px; background:var(--panel); color:var(--dim); margin-left:6px}
+.tagline.run{background:#efe6d4; color:var(--warn)}
+.tagline.ok{background:#e3efe6; color:var(--ok)}
+.tagline.bad{background:#f5e0dc; color:var(--err)}
+
 footer{
   border-top:1px solid var(--line); background:rgba(250,249,245,.94);
   padding:10px 12px calc(12px + env(safe-area-inset-bottom)); flex:none;
@@ -151,6 +202,7 @@ footer{
 <header>
   <button class="icon" id="btnMenu" aria-label="菜单">☰</button>
   <div class="title">Agent<small id="status">连接中…</small></div>
+  <button class="badge" id="badge">子任务 0/3</button>
   <button class="pill" id="btnNew">新会话</button>
 </header>
 
@@ -161,7 +213,36 @@ footer{
   <div id="sessList"></div>
   <div class="dr-sep"></div>
 
-  <div class="dr-head"><span>设置</span></div>
+  <div class="dr-head"><span>功能</span></div>
+  <div class="grid">
+    <button id="goSkills"><b>技能</b><span>载入 SKILL.md</span></button>
+    <button id="goWorkflows"><b>工作流</b><span>跑 JSON 流程</span></button>
+    <button id="goSubagents"><b>子任务</b><span>最多 3 个并行</span></button>
+    <button id="goFiles"><b>文件</b><span>浏览与预览</span></button>
+  </div>
+
+  <div class="dr-sep"></div>
+  <div class="dr-head"><span>模型</span></div>
+  <div class="dr-label">当前：<span id="curModel">读取中…</span></div>
+  <select id="selPreset">
+    <option value="">选择预设…</option>
+  </select>
+  <div class="dr-label">BASE URL</div>
+  <input id="inpBase" placeholder="https://api.openai.com/v1" autocomplete="off">
+  <div class="dr-label">模型 ID</div>
+  <input id="inpModel" placeholder="gpt-4o-mini" autocomplete="off">
+  <div class="dr-label">API Key（留空 = 不改动）</div>
+  <input id="inpKey" type="password" placeholder="sk-..." autocomplete="off">
+  <div class="dr-label">每分钟请求上限（留空 = 不改动，0 = 不限）</div>
+  <input id="inpRate" placeholder="例如 7" autocomplete="off">
+  <div class="dr-label"><input type="checkbox" id="chkMock" style="width:auto"> 强制 Mock（不调真模型）</div>
+  <div class="row2">
+    <button class="act primary" id="btnApplyModel">应用模型</button>
+    <button class="act" id="btnTestModel">测一句</button>
+  </div>
+
+  <div class="dr-sep"></div>
+  <div class="dr-head"><span>对话设置</span></div>
   <div class="dr-label">API_TOKEN（服务端没设就留空）</div>
   <input id="inpToken" autocomplete="off" placeholder="X-API-Token">
   <div class="dr-label">系统提示词（新建会话时生效）</div>
@@ -173,8 +254,17 @@ footer{
   <div class="dr-sep"></div>
   <button class="act" id="btnExport">导出当前会话（Markdown）</button>
   <button class="act" id="btnClearView">清空当前画面</button>
-  <div class="dr-tip">会话保存在服务端 data/sessions，浏览器只记住当前 session id。导出会把整段对话存成 .md 文件。</div>
+  <div class="dr-tip">会话存在服务端 data/sessions；浏览器只记 session id、token 和设置。模型切换会重建客户端，不写入 .env，重启后回到 .env 的配置。</div>
 </aside>
+
+<section id="sheet">
+  <header>
+    <button class="icon" id="sheetBack" aria-label="返回">←</button>
+    <div class="title" id="sheetTitle">面板<small id="sheetSub"></small></div>
+    <button class="pill" id="sheetRefresh">刷新</button>
+  </header>
+  <main id="sheetBody"><div class="wrap" id="sheetWrap"></div></main>
+</section>
 
 <main id="log"><div class="wrap" id="wrap"></div></main>
 
@@ -195,7 +285,18 @@ let busy = false;
 let ctrl = null;
 let curBot = null;
 let curRaw = '';
+let subTimer = null;
+let sheetMode = '';
 const toolMap = new Map();
+
+const PRESETS = [
+  { label: 'OpenAI · gpt-4o-mini', base: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+  { label: 'DeepSeek · deepseek-chat', base: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+  { label: '商汤日日新 · Token Plan', base: 'https://token.sensenova.cn/v1', model: 'sensenova-u1.5-lite' },
+  { label: '商汤大装置 · SenseChat-5', base: 'https://api.sensenova.cn/compatible-mode/v1', model: 'SenseChat-5' },
+  { label: '通义千问 · qwen-plus', base: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus' },
+  { label: '本地 Ollama · qwen2.5', base: 'http://127.0.0.1:11434/v1', model: 'qwen2.5' },
+];
 
 function esc(s){
   return String(s == null ? '' : s)
@@ -209,8 +310,7 @@ function inlineMd(s){
   const parts = String(s).split('`');
   let out = '';
   for (let i = 0; i < parts.length; i++){
-    if (i % 2 === 1){ out += '<code>' + esc(parts[i]) + '</code>'; }
-    else { out += boldMd(parts[i]); }
+    out += (i % 2 === 1) ? '<code>' + esc(parts[i]) + '</code>' : boldMd(parts[i]);
   }
   return out;
 }
@@ -243,8 +343,7 @@ function textBlocks(txt){
     if (inList){ html += '</ul>'; inList = false; }
   }
   for (let i = 0; i < lines.length; i++){
-    const raw = lines[i];
-    const t = raw.trim();
+    const t = lines[i].trim();
     if (!t){ flushPara(); closeList(); continue; }
     if (t.slice(0, 2) === '- ' || t.slice(0, 2) === '* '){
       flushPara();
@@ -350,6 +449,14 @@ async function apiGet(path){
   if (!resp.ok){ throw new Error('HTTP ' + resp.status + ' ' + (await resp.text()).slice(0, 160)); }
   return resp.json();
 }
+async function apiPost(path, body){
+  const resp = await fetch(path, { method: 'POST', headers: headers(), body: JSON.stringify(body || {}) });
+  const text = await resp.text();
+  let data = null;
+  try { data = JSON.parse(text); } catch (e) { data = { raw: text }; }
+  if (!resp.ok){ throw new Error('HTTP ' + resp.status + ' ' + text.slice(0, 160)); }
+  return data;
+}
 
 async function refreshStatus(){
   try{
@@ -359,11 +466,36 @@ async function refreshStatus(){
     $('status').textContent = '离线';
   }
 }
+async function refreshConfig(){
+  try{
+    const j = await apiGet('/api/config');
+    $('curModel').textContent = (j.mock_llm ? 'Mock' : j.model) + ' @ ' + j.base_url;
+    if (!$('inpBase').value){ $('inpBase').value = j.base_url; }
+    if (!$('inpModel').value){ $('inpModel').value = j.model; }
+  }catch (e){
+    $('curModel').textContent = '读取失败：' + e.message;
+  }
+}
 
 function openDrawer(on){
   $('drawer').classList.toggle('on', on);
   $('mask').classList.toggle('on', on);
-  if (on){ loadSessions(); }
+  if (on){ loadSessions(); refreshConfig(); }
+}
+function openSheet(mode, title, sub){
+  sheetMode = mode;
+  $('sheetTitle').innerHTML = esc(title) + '<small>' + esc(sub || '') + '</small>';
+  $('sheet').classList.add('on');
+  if (mode === 'subagents'){ startSubPoll(); }
+}
+function closeSheet(){
+  $('sheet').classList.remove('on');
+  stopSubPoll();
+  sheetMode = '';
+}
+function sheetWrap(){
+  $('sheetWrap').innerHTML = '';
+  return $('sheetWrap');
 }
 
 async function loadSessions(){
@@ -406,9 +538,7 @@ async function loadSessions(){
           if (!resp.ok){ throw new Error('HTTP ' + resp.status); }
           if (s.id === sessionId){ startNew(); }
           loadSessions();
-        }catch (e){
-          note('删除失败：' + e.message, 'err');
-        }
+        }catch (e){ note('删除失败：' + e.message, 'err'); }
       });
       row.appendChild(body);
       row.appendChild(del);
@@ -429,8 +559,7 @@ async function switchSession(id){
     toolMap.clear();
     curBot = null;
     curRaw = '';
-    const msgs = j.messages || [];
-    msgs.forEach(m => {
+    (j.messages || []).forEach(m => {
       if (m.role === 'user'){
         addUser(String(m.content || ''));
       } else if (m.role === 'assistant' && m.content){
@@ -455,6 +584,15 @@ function startNew(){
   curRaw = '';
   showSession();
   note('已开新会话，下一句会建一个新 session。');
+}
+
+async function ensureSession(){
+  if (sessionId){ return sessionId; }
+  const j = await apiPost('/api/sessions', { title: '面板操作' });
+  sessionId = j.id;
+  localStorage.setItem(LS.session, sessionId);
+  showSession();
+  return sessionId;
 }
 
 async function exportMd(){
@@ -485,6 +623,316 @@ async function exportMd(){
     note('已导出 Markdown 文件。');
   }catch (e){
     note('导出失败：' + e.message, 'err');
+  }
+}
+
+function card(title, meta, desc, actions){
+  const box = document.createElement('div');
+  box.className = 'panel';
+  const h = document.createElement('h3');
+  h.textContent = title;
+  box.appendChild(h);
+  if (meta){
+    const m = document.createElement('div');
+    m.className = 'meta';
+    m.textContent = meta;
+    box.appendChild(m);
+  }
+  if (desc){
+    const d = document.createElement('div');
+    d.className = 'desc';
+    d.textContent = desc;
+    box.appendChild(d);
+  }
+  const acts = document.createElement('div');
+  acts.className = 'acts';
+  (actions || []).forEach(a => {
+    const b = document.createElement('button');
+    b.className = 'mini ' + (a.cls || '');
+    b.textContent = a.label;
+    b.addEventListener('click', a.onClick);
+    acts.appendChild(b);
+    a.node = b;
+  });
+  box.appendChild(acts);
+  return box;
+}
+function outputBox(box, text){
+  const pre = document.createElement('div');
+  pre.className = 'out';
+  pre.textContent = text;
+  box.appendChild(pre);
+  return pre;
+}
+
+async function showSkills(){
+  const w = sheetWrap();
+  try{
+    const j = await apiGet('/api/skills?refresh=1');
+    const list = j.skills || [];
+    if (!list.length){
+      w.innerHTML = '<div class="dr-tip">没有扫描到 Skill。把 SKILL.md 放进 skills/ 或 workspace/.skills/ 再刷新。</div>';
+      return;
+    }
+    list.forEach(s => {
+      const box = card(s.name, s.directory, s.description, [{
+        label: '载入到当前会话',
+        cls: 'primary',
+        onClick: async () => {
+          try{
+            const sid = await ensureSession();
+            const r = await apiPost('/api/sessions/' + encodeURIComponent(sid) + '/skills/' + encodeURIComponent(s.name), {});
+            outputBox(box, r.already_loaded ? '这个会话已经载入过了。' : '已载入，作用在后续每一轮（' + (r.chars || 0) + ' 字）。');
+          }catch (e){ outputBox(box, '载入失败：' + e.message); }
+        }
+      }, {
+        label: '看全文',
+        onClick: async () => {
+          try{
+            const r = await apiGet('/api/skills/' + encodeURIComponent(s.name));
+            outputBox(box, r.content || '');
+          }catch (e){ outputBox(box, '读取失败：' + e.message); }
+        }
+      }]);
+      w.appendChild(box);
+    });
+  }catch (e){
+    w.innerHTML = '<div class="err">加载技能失败：' + esc(e.message) + '</div>';
+  }
+}
+
+async function showWorkflows(){
+  const w = sheetWrap();
+  try{
+    const j = await apiGet('/api/workflows');
+    const list = j.workflows || [];
+    if (!list.length){
+      w.innerHTML = '<div class="dr-tip">workflows/ 目录里没有 .json 工作流。</div>';
+      return;
+    }
+    list.forEach(def => {
+      const inputs = def.inputs || {};
+      const box = card(def.name, (def.steps || []).length + ' 步 · ' + (def.path || ''),
+        (def.description || ''),
+        [{ label: '运行', cls: 'primary', onClick: null }]);
+      const fields = {};
+      const keys = Object.keys(inputs);
+      keys.forEach(k => {
+        const spec = inputs[k] || {};
+        const lab = document.createElement('div');
+        lab.className = 'meta';
+        lab.textContent = k + (spec && spec.required ? '（必填）' : (spec && spec.default !== undefined ? '（默认 ' + spec.default + '）' : ''));
+        box.appendChild(lab);
+        const inp = document.createElement('input');
+        inp.placeholder = '输入 ' + k;
+        if (spec && spec.default !== undefined){ inp.value = String(spec.default); }
+        box.appendChild(inp);
+        fields[k] = inp;
+      });
+      const btn = box.querySelector('.mini.primary');
+      btn.addEventListener('click', async () => {
+        const payload = {};
+        keys.forEach(k => { if (fields[k].value){ payload[k] = fields[k].value; } });
+        btn.textContent = '运行中…';
+        btn.disabled = true;
+        try{
+          const r = await apiPost('/api/workflows/' + encodeURIComponent(def.name) + '/run',
+            { inputs: payload, session_id: sessionId || undefined });
+          outputBox(box, JSON.stringify(r, null, 2));
+          btn.textContent = '运行';
+        }catch (e){
+          outputBox(box, '运行失败：' + e.message);
+          btn.textContent = '运行';
+        }finally{
+          btn.disabled = false;
+          refreshSubBadge();
+        }
+      });
+      w.appendChild(box);
+    });
+  }catch (e){
+    w.innerHTML = '<div class="err">加载工作流失败：' + esc(e.message) + '</div>';
+  }
+}
+
+async function refreshSubBadge(){
+  try{
+    const j = await apiGet('/api/subagents');
+    const n = j.active || 0;
+    const max = j.max_concurrent || 3;
+    const b = $('badge');
+    b.textContent = '子任务 ' + n + '/' + max;
+    b.classList.toggle('on', n > 0);
+  }catch (e){ }
+}
+
+function startSubPoll(){
+  stopSubPoll();
+  showSubagents();
+  subTimer = setInterval(() => { if (sheetMode === 'subagents'){ showSubagents(); } }, 2000);
+}
+function stopSubPoll(){
+  if (subTimer){ clearInterval(subTimer); subTimer = null; }
+}
+
+async function showSubagents(){
+  const w = sheetWrap();
+  try{
+    const j = await apiGet('/api/subagents');
+    const list = j.subagents || [];
+    const head = document.createElement('div');
+    head.className = 'dr-tip';
+    head.textContent = '并发 ' + (j.active || 0) + '/' + (j.max_concurrent || 3) +
+      '，最大层数 ' + (j.max_depth || 1) + '。派第 4 个会被 409 拒绝。';
+    w.appendChild(head);
+    if (!list.length){
+      const e = document.createElement('div');
+      e.className = 'dr-tip';
+      e.textContent = '还没有子任务。让 Agent 用 spawn_agent 派活，或者在这里直接建。';
+      w.appendChild(e);
+    }
+    list.slice().reverse().forEach(s => {
+      const status = s.status || 'running';
+      const cls = status === 'done' ? 'ok' : (status === 'running' ? 'run' : 'bad');
+      const title = (s.title || '(未命名)') + ' · ' + status;
+      const box = card(title,
+        '深度 ' + s.depth + ' · 创建 ' + String(s.created_at || '').slice(11, 19) +
+        (s.finished_at ? ' · 结束 ' + String(s.finished_at).slice(11, 19) : ''),
+        s.task || '',
+        [{
+          label: '看结果',
+          onClick: async () => {
+            try{
+              const r = await apiGet('/api/subagents/' + encodeURIComponent(s.id));
+              outputBox(box, (r.result || '(还没有结果)') + (r.error ? NL + 'ERROR: ' + r.error : ''));
+            }catch (e){ outputBox(box, '读取失败：' + e.message); }
+          }
+        }, {
+          label: '取消',
+          cls: status === 'running' ? 'warn' : '',
+          onClick: async () => {
+            try{
+              await apiPost('/api/subagents/' + encodeURIComponent(s.id) + '/cancel', {});
+              showSubagents();
+            }catch (e){ outputBox(box, '取消失败：' + e.message); }
+          }
+        }]);
+      const tag = document.createElement('span');
+      tag.className = 'tagline ' + cls;
+      tag.textContent = status;
+      box.querySelector('h3').appendChild(tag);
+      w.appendChild(box);
+    });
+    const spawnBtn = document.createElement('button');
+    spawnBtn.className = 'act primary';
+    spawnBtn.textContent = '新建子任务';
+    spawnBtn.addEventListener('click', async () => {
+      const task = prompt('子任务要做什么？');
+      if (!task){ return; }
+      try{
+        const r = await apiPost('/api/subagents', { task: task, parent_session_id: sessionId || undefined });
+        note('已派发子任务 ' + r.id + '（' + (r.concurrency || '') + '）');
+        showSubagents();
+        refreshSubBadge();
+      }catch (e){ alert('派发失败：' + e.message); }
+    });
+    w.appendChild(spawnBtn);
+  }catch (e){
+    w.innerHTML = '<div class="err">加载子任务失败：' + esc(e.message) + '</div>';
+  }
+}
+
+let filePath = '.';
+async function showFiles(){
+  const w = sheetWrap();
+  const row = document.createElement('div');
+  row.className = 'row2';
+  const inp = document.createElement('input');
+  inp.value = filePath;
+  inp.placeholder = '相对 workspace 的路径，例如 . 或 outputs';
+  row.appendChild(inp);
+  const go = document.createElement('button');
+  go.className = 'act';
+  go.style.marginTop = '0';
+  go.textContent = '打开';
+  row.appendChild(go);
+  w.appendChild(row);
+  const out = document.createElement('div');
+  out.className = 'code';
+  out.textContent = '读取中…';
+  w.appendChild(out);
+
+  async function loadDir(p){
+    filePath = p;
+    inp.value = p;
+    out.textContent = '读取中…';
+    try{
+      const r = await apiGet('/api/dir?path=' + encodeURIComponent(p) + '&recursive=0');
+      out.textContent = r.result || '(空目录)';
+    }catch (e){
+      out.textContent = '读取失败：' + e.message;
+    }
+  }
+  go.addEventListener('click', () => loadDir(inp.value.trim() || '.'));
+  inp.addEventListener('keydown', (e) => { if (e.key === 'Enter'){ loadDir(inp.value.trim() || '.'); } });
+  loadDir(filePath);
+
+  const openRow = document.createElement('div');
+  openRow.className = 'row2';
+  const fileInp = document.createElement('input');
+  fileInp.placeholder = '要预览的文件路径，例如 outputs/report.md';
+  openRow.appendChild(fileInp);
+  const openBtn = document.createElement('button');
+  openBtn.className = 'act';
+  openBtn.style.marginTop = '0';
+  openBtn.textContent = '预览';
+  openRow.appendChild(openBtn);
+  w.appendChild(openRow);
+  const preview = document.createElement('div');
+  preview.className = 'code';
+  preview.textContent = '（在下面看文件内容）';
+  openBtn.addEventListener('click', async () => {
+    const p = fileInp.value.trim();
+    if (!p){ return; }
+    preview.textContent = '读取中…';
+    try{
+      const r = await apiGet('/api/files?path=' + encodeURIComponent(p) + '&limit=300');
+      preview.textContent = r.result || '(空文件)';
+    }catch (e){
+      preview.textContent = '读取失败：' + e.message;
+    }
+  });
+  w.appendChild(preview);
+}
+
+async function applyModel(){
+  const body = {};
+  const base = $('inpBase').value.trim();
+  const model = $('inpModel').value.trim();
+  const key = $('inpKey').value.trim();
+  const rate = $('inpRate').value.trim();
+  if (base){ body.base_url = base; }
+  if (model){ body.model = model; }
+  if (key){ body.api_key = key; }
+  if (rate !== ''){ body.rate_limit = rate; }
+  body.mock = $('chkMock').checked;
+  try{
+    const r = await apiPost('/api/ui/llm', body);
+    $('curModel').textContent = (r.mock_llm ? 'Mock' : r.model) + ' @ ' + r.base_url;
+    $('inpKey').value = '';
+    note('模型已切换：' + (r.mock_llm ? 'Mock 模式' : r.model + ' @ ' + r.base_url));
+    refreshStatus();
+  }catch (e){
+    note('切换失败：' + e.message, 'err');
+  }
+}
+async function testModel(){
+  try{
+    const r = await apiPost('/api/chat', { message: '只回复两个字：收到' });
+    const text = (r.content || '') + (r.error ? ' / ERROR ' + r.error : '');
+    note('模型测试：' + (text || '(空)'));
+  }catch (e){
+    note('模型测试失败：' + e.message, 'err');
   }
 }
 
@@ -544,6 +992,7 @@ async function send(){
     $('send').textContent = '↑';
     $('send').classList.remove('stop');
     showSession();
+    refreshSubBadge();
   }
 }
 
@@ -559,8 +1008,10 @@ function handleEvent(ev){
     curBot = null;
     curRaw = '';
     addTool(ev.id, ev.name, ev.arguments);
+    if (ev.name === 'spawn_agent' || ev.name === 'run_workflow'){ refreshSubBadge(); }
   } else if (type === 'tool_result'){
     fillTool(ev.id, ev.name, ev.output, ev.ok);
+    if (ev.name === 'spawn_agent' || ev.name === 'wait_agent'){ refreshSubBadge(); }
   } else if (type === 'warning'){
     note(ev.message || '');
   } else if (type === 'error'){
@@ -598,6 +1049,18 @@ $('input').addEventListener('input', () => {
 $('btnMenu').addEventListener('click', () => openDrawer(true));
 $('mask').addEventListener('click', () => openDrawer(false));
 $('btnNew').addEventListener('click', () => { startNew(); openDrawer(false); });
+$('badge').addEventListener('click', () => { openDrawer(false); openSheet('subagents', '子任务', '最多 3 个并行'); });
+$('goSkills').addEventListener('click', () => { openDrawer(false); openSheet('skills', '技能', 'SKILL.md 载入后长期生效'); showSkills(); });
+$('goWorkflows').addEventListener('click', () => { openDrawer(false); openSheet('workflows', '工作流', 'JSON 步骤'); showWorkflows(); });
+$('goSubagents').addEventListener('click', () => { openDrawer(false); openSheet('subagents', '子任务', '最多 3 个并行'); });
+$('goFiles').addEventListener('click', () => { openDrawer(false); openSheet('files', '文件', '沙箱 workspace'); showFiles(); });
+$('sheetBack').addEventListener('click', closeSheet);
+$('sheetRefresh').addEventListener('click', () => {
+  if (sheetMode === 'skills'){ showSkills(); }
+  else if (sheetMode === 'workflows'){ showWorkflows(); }
+  else if (sheetMode === 'subagents'){ showSubagents(); }
+  else if (sheetMode === 'files'){ showFiles(); }
+});
 $('btnClearView').addEventListener('click', () => {
   wrapEl().innerHTML = '';
   toolMap.clear();
@@ -614,13 +1077,32 @@ $('btnSave').addEventListener('click', () => {
   refreshStatus();
   loadSessions();
 });
+$('btnApplyModel').addEventListener('click', applyModel);
+$('btnTestModel').addEventListener('click', testModel);
+$('selPreset').addEventListener('change', () => {
+  const idx = Number($('selPreset').value);
+  if (!idx){ return; }
+  const p = PRESETS[idx - 1];
+  if (!p){ return; }
+  $('inpBase').value = p.base;
+  $('inpModel').value = p.model;
+});
 
+PRESETS.forEach((p, i) => {
+  const o = document.createElement('option');
+  o.value = String(i + 1);
+  o.textContent = p.label;
+  $('selPreset').appendChild(o);
+});
 $('inpToken').value = localStorage.getItem(LS.token) || '';
 $('inpSystem').value = localStorage.getItem(LS.system) || '';
 $('inpTurns').value = localStorage.getItem(LS.turns) || '';
 showSession();
 refreshStatus();
-note('准备就绪。点左上角 ☰ 看会话列表、导出记录和设置。');
+refreshConfig();
+refreshSubBadge();
+setInterval(refreshSubBadge, 8000);
+note('准备就绪。☰ 里可以切模型、载技能、跑工作流、看子任务、浏览文件。');
 $('input').focus();
 </script>
 </body>
@@ -629,12 +1111,55 @@ $('input').focus();
 
 
 def mount(router) -> None:
-    """把 UI 路由挂到服务上（不需要鉴权，页面自己带 X-API-Token 调接口）。"""
+    """把 UI 路由挂到服务上（页面自己带 X-API-Token 调接口）。"""
+    from .llm import build_llm
     from .server import Response
 
     def ui(req, params):
         return Response(200, UI_HTML, content_type="text/html; charset=utf-8")
 
+    def ui_llm(req, params):
+        """运行时切换模型：只改内存里的 settings + 重建 llm，不写 .env。"""
+        from dataclasses import replace
+
+        runtime = req.runtime
+        st = runtime.settings
+        body = req.json()
+
+        changes: dict = {}
+        base_url = body.get("base_url")
+        if isinstance(base_url, str) and base_url.strip():
+            changes["llm_base_url"] = base_url.strip().rstrip("/")
+        model = body.get("model")
+        if isinstance(model, str) and model.strip():
+            changes["llm_model"] = model.strip()
+        api_key = body.get("api_key")
+        if isinstance(api_key, str) and api_key.strip():
+            changes["llm_api_key"] = api_key.strip()
+        rate_limit = body.get("rate_limit")
+        if rate_limit is not None and str(rate_limit).strip() != "":
+            os.environ["RATE_LIMIT_PER_MIN"] = str(rate_limit).strip()
+        mock = body.get("mock")
+        if mock is True:
+            changes["llm_mock"] = "true"
+        elif mock is False and (changes.get("llm_api_key") or st.llm_api_key):
+            changes["llm_mock"] = "false"
+
+        st = replace(st, **changes) if changes else st
+        runtime.settings = st
+        runtime.llm = build_llm(st)
+        return Response(
+            200,
+            {
+                "ok": True,
+                "model": st.llm_model,
+                "base_url": st.llm_base_url,
+                "mock_llm": st.use_mock_llm,
+                "rate_limit_per_min": os.getenv("RATE_LIMIT_PER_MIN", ""),
+            },
+        )
+
     router.add("GET", "/", ui, auth=False)
     router.add("GET", "/ui", ui, auth=False)
     router.add("GET", "/favicon.ico", lambda req, params: Response(204), auth=False)
+    router.add("POST", "/api/ui/llm", ui_llm, auth=True)
