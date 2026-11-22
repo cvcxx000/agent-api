@@ -150,7 +150,7 @@ class Settings:
             python_timeout=_int("PYTHON_TIMEOUT", 60),
             shell_timeout=_int("SHELL_TIMEOUT", 60),
             enable_python=_bool("ENABLE_PYTHON", True),
-            enable_shell=_bool("ENABLE_SHELL", False),
+            enable_shell=_bool("ENABLE_SHELL", True),
             sandbox_root=sandbox,
             data_dir=_path("DATA_DIR", BASE_DIR / "data"),
             skills_dirs=_paths("SKILLS_DIRS", [BASE_DIR / "skills", sandbox / ".skills"]),
