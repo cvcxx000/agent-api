@@ -181,9 +181,11 @@ def stream_chat(api: Api, message: str, session: list[str], state: dict) -> None
                     if len(lines) > 8:
                         print(c(DIM, f"    │ …（还有 {len(lines) - 8} 行）"))
                 elif kind == "warning":
-                    print(c(MAGENTA, "  ! " + str(ev.get("message"))))
+                    warn = str(ev.get("message"))
+                    print(c(MAGENTA, "  ! " + warn))
                 elif kind == "error":
-                    print(c(RED, "  错误：" + str(ev.get("message"))))
+                    err = str(ev.get("message"))
+                    print(c(RED, "  错误：" + err))
                 elif kind == "end":
                     if content_open:
                         print()
@@ -263,7 +265,8 @@ def cmd_search(api: Api, query: str) -> None:
         print(f"{i}. {c(BOLD, item.get('title') or '')}")
         print(c(CYAN, "   " + (item.get("url") or "")))
         if item.get("snippet"):
-            print(c(DIM, "   " + wrap(item["snippet"])[:400].replace("\n", "\n   ")))
+            snippet = wrap(item["snippet"])[:400].replace("\n", "\n   ")
+            print(c(DIM, "   " + snippet))
 
 
 def cmd_image(api: Api, prompt: str) -> None:
