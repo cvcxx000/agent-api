@@ -19,5 +19,12 @@ def load_default_system_prompt(settings: Settings) -> str:
         except OSError as exc:
             raise RuntimeError(f"读取 SYSTEM_PROMPT_FILE 失败：{exc}") from exc
     if not override:
+        custom = Path(settings.data_dir) / "default_system.md"
+        if custom.exists():
+            try:
+                override = custom.read_text(encoding="utf-8")
+            except OSError:
+                override = ""
+    if not override:
         override = PROMPT_FILE.read_text(encoding="utf-8")
     return override.replace("{sandbox_root}", str(settings.sandbox_root))
