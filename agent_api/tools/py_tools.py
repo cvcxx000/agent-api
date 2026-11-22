@@ -9,6 +9,7 @@ import sys
 import time
 from typing import Any
 
+from .. import guard
 from ..config import settings
 from ..errors import ToolError
 from ..utils import new_id
@@ -73,6 +74,9 @@ def run_python(ctx: ToolContext, args: dict[str, Any]) -> str:
         raise ToolError("code 不能为空")
     if len(code) > MAX_CODE_CHARS:
         raise ToolError(f"代码过长（>{MAX_CODE_CHARS} 字符），请拆分或写到文件里再运行")
+    hits = guard.check(code)
+    if hits and not args.get("confirm"):
+        raise ToolError(guard.refusal("run_python", code, hits))
     timeout = max(1, min(int(args.get("timeout") or settings.python_timeout), 600))
 
     (settings.data_dir / "tmp").mkdir(parents=True, exist_ok=True)
@@ -93,6 +97,9 @@ def run_shell(ctx: ToolContext, args: dict[str, Any]) -> str:
     command = args.get("command")
     if not isinstance(command, str) or not command.strip():
         raise ToolError("command 不能为空")
+    hits = guard.check(command)
+    if hits and not args.get("confirm"):
+        raise ToolError(guard.refusal("run_shell", command, hits))
     timeout = max(1, min(int(args.get("timeout") or settings.shell_timeout), 600))
     exit_code, stdout, stderr, elapsed = _run(["/bin/bash", "-lc", command], timeout)
     return f"[run_shell] exit={exit_code} time={elapsed:.2f}s\n" + _format_output(stdout, stderr)
@@ -102,12 +109,14 @@ def register(registry: ToolRegistry) -> None:
     registry.register(
         "run_python",
         "在沙箱目录（cwd 为工作区根）用当前 Python 解释器执行一段代码，返回 exit code / stdout / stderr。"
-        "适合做计算、处理文件、写脚本验证；超时会强制结束。",
+        "适合做计算、处理文件、写脚本验证；超时会强制结束。"
+        "删系统目录、调 subprocess 删文件这类高危代码会被拦一次，需要用户同意后带 confirm=true。",
         {
             "type": "object",
             "properties": {
                 "code": {"type": "string", "description": "完整 Python 代码"},
                 "timeout": {"type": "integer", "description": f"秒，默认 {settings.python_timeout}，上限 600"},
+                "confirm": {"type": "boolean", "description": "被高危闸门拦下、且用户已明确同意时传 true"},
             },
             "required": ["code"],
         },
@@ -115,12 +124,14 @@ def register(registry: ToolRegistry) -> None:
     )
     registry.register(
         "run_shell",
-        "执行 shell 命令（默认关闭，需 ENABLE_SHELL=true）。",
+        "执行 shell 命令（需 ENABLE_SHELL=true）。rm -rf 系统目录、提权、卸载软件包、重装系统这类"
+        "高危命令会被拦一次，先把风险说给用户，用户同意后带 confirm=true 重调。",
         {
             "type": "object",
             "properties": {
                 "command": {"type": "string"},
                 "timeout": {"type": "integer", "description": f"秒，默认 {settings.shell_timeout}"},
+                "confirm": {"type": "boolean", "description": "被高危闸门拦下、且用户已明确同意时传 true"},
             },
             "required": ["command"],
         },
