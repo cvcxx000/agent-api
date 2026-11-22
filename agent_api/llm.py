@@ -68,6 +68,41 @@ class BaseLLM:
     ) -> dict[str, Any]:
         raise NotImplementedError
 
+    def stream_chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        on_event: Any = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> dict[str, Any]:
+        """默认实现：不支持流式就退回一次性，把整段当一次 delta 发出去。"""
+        message = self.chat(messages, tools=tools, temperature=temperature, max_tokens=max_tokens)
+        if on_event and message.get("reasoning"):
+            on_event({"type": "reasoning_delta", "text": message["reasoning"]})
+        if on_event and message.get("content"):
+            on_event({"type": "content_delta", "text": message["content"]})
+        return message
+
+
+def _delta_text(delta: dict[str, Any]) -> tuple[str, str]:
+    """从 delta 里挖出（思考, 正文）。中转站字段五花八门，这里都认。"""
+    think = ""
+    for key in ("reasoning_content", "reasoning", "thinking", "reasoning_text"):
+        value = delta.get(key)
+        if isinstance(value, str) and value:
+            think = value
+            break
+        if isinstance(value, dict):
+            nested = value.get("content") or value.get("text")
+            if isinstance(nested, str) and nested:
+                think = nested
+                break
+    content = delta.get("content")
+    if isinstance(content, list):
+        content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+    return think, content if isinstance(content, str) else ""
+
 
 class OpenAICompatibleLLM(BaseLLM):
     def __init__(self, settings: Settings, per_minute: int | None = None):
@@ -142,6 +177,163 @@ class OpenAICompatibleLLM(BaseLLM):
             f"调用模型失败（{self.settings.llm_base_url} / {self.settings.llm_model}）：{last_error}"
         )
 
+    def stream_chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        on_event: Any = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": self.settings.llm_model,
+            "messages": messages,
+            "temperature": self.settings.llm_temperature if temperature is None else temperature,
+            "max_tokens": self.settings.llm_max_tokens if max_tokens is None else max_tokens,
+            "stream": True,
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+
+        url = f"{self.settings.llm_base_url}/chat/completions"
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        last_error = ""
+
+        for attempt in range(3):
+            self.gate.wait()
+            request = urllib.request.Request(
+                url,
+                data=data,
+                method="POST",
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "text/event-stream",
+                    "Authorization": f"Bearer {self.settings.llm_api_key}",
+                },
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=self.settings.llm_timeout) as resp:
+                    return self._read_stream(resp, on_event)
+            except urllib.error.HTTPError as exc:
+                detail = ""
+                try:
+                    detail = exc.read().decode("utf-8", "replace")[:600]
+                except Exception:  # noqa: BLE001
+                    pass
+                last_error = f"HTTP {exc.code}：{detail}"
+                if exc.code not in _RETRY_STATUS:
+                    break
+                if exc.code == 429:
+                    header = exc.headers.get("Retry-After") if exc.headers else None
+                    wait = 1.0
+                    if header:
+                        try:
+                            wait = float(header)
+                        except ValueError:
+                            wait = 1.0
+                    time.sleep(min(max(wait, 1.0), 60.0))
+            except (socket.timeout, TimeoutError) as exc:
+                last_error = f"流式请求超时：{exc}"
+            except urllib.error.URLError as exc:
+                last_error = f"网络错误：{exc.reason}"
+            if attempt < 2:
+                time.sleep(1.5 * (attempt + 1))
+
+        raise LLMError(
+            f"调用模型失败（{self.settings.llm_base_url} / {self.settings.llm_model}）：{last_error}"
+        )
+
+    def _read_stream(self, resp: Any, on_event: Any) -> dict[str, Any]:
+        content_parts: list[str] = []
+        reason_parts: list[str] = []
+        calls: dict[int, dict[str, Any]] = {}
+
+        for raw_line in resp:
+            line = raw_line.decode("utf-8", "replace").strip()
+            if not line:
+                continue
+            if line.startswith("data:"):
+                data = line[5:].strip()
+                if data in {"[DONE]", "DONE"}:
+                    break
+                try:
+                    chunk = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+            elif line.startswith("{"):
+                try:
+                    chunk = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+            else:
+                continue
+            if not isinstance(chunk, dict):
+                continue
+            error = chunk.get("error")
+            if isinstance(error, dict) and error:
+                raise LLMError(f"模型返回错误：{error.get('message') or json.dumps(error, ensure_ascii=False)[:300]}")
+            choices = chunk.get("choices") or []
+            if not choices:
+                continue
+            delta = choices[0].get("delta") or choices[0].get("message") or {}
+            think, text = _delta_text(delta)
+            if think:
+                reason_parts.append(think)
+                if on_event:
+                    try:
+                        on_event({"type": "reasoning_delta", "text": think})
+                    except Exception:  # noqa: BLE001
+                        pass
+            if text:
+                content_parts.append(text)
+                if on_event:
+                    try:
+                        on_event({"type": "content_delta", "text": text})
+                    except Exception:  # noqa: BLE001
+                        pass
+            for tc in delta.get("tool_calls") or []:
+                if not isinstance(tc, dict):
+                    continue
+                idx = tc.get("index")
+                if not isinstance(idx, int):
+                    idx = len(calls)
+                rec = calls.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                if isinstance(tc.get("id"), str) and tc["id"]:
+                    rec["id"] = tc["id"]
+                fn = tc.get("function") or {}
+                name = fn.get("name")
+                if isinstance(name, str) and name:
+                    rec["name"] = name if not rec["name"] else rec["name"]
+                args = fn.get("arguments")
+                if isinstance(args, str):
+                    rec["arguments"] += args
+                elif isinstance(args, dict):
+                    rec["arguments"] += json.dumps(args, ensure_ascii=False)
+
+        message: dict[str, Any] = {
+            "role": "assistant",
+            "content": "".join(content_parts),
+        }
+        reasoning = "".join(reason_parts).strip()
+        if reasoning:
+            message["reasoning"] = reasoning
+        normalized = []
+        for idx in sorted(calls):
+            rec = calls[idx]
+            if not rec.get("name"):
+                continue
+            normalized.append(
+                {
+                    "id": rec.get("id") or new_id("call"),
+                    "type": "function",
+                    "function": {"name": rec["name"], "arguments": rec.get("arguments") or "{}"},
+                }
+            )
+        if normalized:
+            message["tool_calls"] = normalized
+        return message
+
     @staticmethod
     def _normalize(data: dict[str, Any]) -> dict[str, Any]:
         choices = data.get("choices") or []
@@ -150,6 +342,10 @@ class OpenAICompatibleLLM(BaseLLM):
         message = dict(choices[0].get("message") or {})
         message.setdefault("role", "assistant")
         message["content"] = message.get("content") or ""
+        reasoning = message.get("reasoning_content") or message.get("reasoning")
+        if isinstance(reasoning, str) and reasoning.strip():
+            message["reasoning"] = reasoning.strip()
+        message.pop("reasoning_content", None)
         calls = message.get("tool_calls") or []
         normalized = []
         for call in calls:
@@ -207,6 +403,27 @@ class MockLLM(BaseLLM):
                 last_user = str(msg.get("content") or "")
                 break
         return {"role": "assistant", "content": f"（Mock 模式，未配置 LLM_API_KEY）已收到任务：{last_user[:200]}"}
+
+    def stream_chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        on_event: Any = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> dict[str, Any]:
+        message = self.chat(messages, tools=tools, temperature=temperature, max_tokens=max_tokens)
+        reason = "（Mock 模式）先看环境，再决定用不用工具。"
+        if on_event:
+            on_event({"type": "reasoning_delta", "text": reason})
+        content = str(message.get("content") or "")
+        step = max(1, len(content) // 40) if content else 1
+        for i in range(0, len(content), step):
+            if on_event:
+                on_event({"type": "content_delta", "text": content[i:i + step]})
+                time.sleep(0.01)
+        message["reasoning"] = reason
+        return message
 
 
 def build_llm(settings: Settings) -> BaseLLM:
