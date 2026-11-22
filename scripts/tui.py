@@ -457,17 +457,23 @@ def main() -> None:
             break
         if not line:
             continue
+        if line == "/":
+            print_cmds()
+            continue
         if line.startswith("/") and " " not in line:
             hits = [k for k, _ in COMMANDS if k.startswith(line)]
-            if len(hits) == 1 and hits[0] != line:
+            if line not in hits and len(hits) == 1:
                 line = hits[0]
+            elif line not in hits and len(hits) > 1:
+                print(c(DIM, "有歧义：") + c(CYAN, " / ".join(hits)))
+                continue
         if line in {"/quit", "/exit", "exit"}:
             break
         if line == "/help":
             print(HELP)
             continue
-        if line == "/":
-            print_cmds()
+        if line == "/skill":
+            print(c(RED, "用法：/skill 名字（先 /skills 看列表）"))
             continue
         if line == "/skills":
             cmd_skills(api)
