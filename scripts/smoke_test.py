@@ -92,7 +92,8 @@ check("read_file", "第一行" in body.get("result", ""), str(body)[:300])
 status, body = jcall("POST", "/api/files", {"path": "../escape.txt", "content": "x"})
 check("sandbox blocks escape", body.get("ok") is False, str(body)[:300])
 
-status, body = jcall("POST", "/api/execute/python", {"code": "print(sum(range(10)))})
+code_sum = "print(sum(range(10)))"
+status, body = jcall("POST", "/api/execute/python", {"code": code_sum})
 check("run_python", "45" in body.get("result", ""), str(body)[:300])
 
 status, body = jcall("POST", "/api/execute/python", {"code": "import time; time.sleep(5)", "timeout": 1})
