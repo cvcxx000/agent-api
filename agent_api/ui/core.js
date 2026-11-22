@@ -125,13 +125,18 @@ function newBot(raw){
   scrollDown();
   return t;
 }
+function argsText(args){
+  if (typeof args === 'string'){ return args; }
+  if (args == null){ return '{}'; }
+  try { return JSON.stringify(args, null, 2); } catch (e) { return String(args); }
+}
 function addTool(id, name, args){
   const d = document.createElement('details');
   d.className = 'tool';
   d.open = true;
   d.innerHTML = '<summary><span class="tag">工具</span><b class="nm">' + esc(name) +
     '</b><span class="st">运行中…</span></summary>' +
-    '<pre class="arg">' + esc(args || '{}') + '</pre><pre class="out">等待输出…</pre>';
+    '<pre class="arg">' + esc(argsText(args)) + '</pre><pre class="out">等待输出…</pre>';
   wrapEl().appendChild(d);
   scrollDown();
   toolMap.set(id || name, { el: d, st: d.querySelector('.st'), out: d.querySelector('.out'), t0: Date.now() });
