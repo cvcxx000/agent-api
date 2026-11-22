@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,6 +22,9 @@ from .tools.base import ToolContext
 logger = logging.getLogger("agent.core")
 
 Emit = Callable[[dict[str, Any]], None]
+
+# 工具结果里的看图标记：view_image 返回 "VIEW_IMAGE: /abs/path"
+_VIEW_RE = re.compile(r"^VIEW_IMAGE:\s*(\S+)\s*$", re.M)
 
 _MAX_INLINE_IMAGE = 4 * 1024 * 1024
 
@@ -83,6 +87,9 @@ class Agent:
 
     def _parts_for(self, message: dict[str, Any]) -> Any:
         """用户消息带附件时：模型能吃图就发多模态内容块，不能就明确告知（不再静默丢弃）。"""
+        raw_content = message.get("content")
+        if isinstance(raw_content, list):
+            return raw_content
         attachments = message.get("attachments") or []
         if attachments and not self.vision:
             if not self._warned_vision:
@@ -190,6 +197,7 @@ class Agent:
                 final_text = content
                 break
 
+            fresh_images: list[str] = []
             for call in tool_calls:
                 self._check_cancel()
                 fn = call.get("function") or {}
@@ -208,6 +216,10 @@ class Agent:
                     )
                     result = self.runtime.registry.execute(name, arguments, self.ctx)
 
+                for one in _VIEW_RE.findall(result or ""):
+                    if one not in fresh_images and len(fresh_images) < 4:
+                        fresh_images.append(one)
+
                 self.messages.append({"role": "tool", "tool_call_id": call.get("id"), "name": name, "content": result})
                 steps.append(
                     {"type": "tool", "turn": turns, "id": call.get("id"), "name": name, "arguments": arguments, "output": result}
@@ -215,6 +227,28 @@ class Agent:
                 self._emit(
                     emit, {"type": "tool_result", "turn": turns, "id": call.get("id"), "name": name, "output": result}
                 )
+            if fresh_images:
+                if self.vision:
+                    self.messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "【view_image 取到的图片】直接看图回答上面的问题，"
+                                "不要再用 run_python 读像素或猜内容。"
+                            ),
+                            "attachments": [{"path": p, "type": "image", "name": Path(p).name} for p in fresh_images],
+                        }
+                    )
+                else:
+                    self.messages.append(
+                        {
+                            "role": "user",
+                            "content": "[view_image 取到的图片没能发给模型：当前模型被判定为不支持看图]",
+                        }
+                    )
+                    if not self._warned_vision:
+                        self._warned_vision = True
+                        self._emit(emit, {"type": "warning", "message": "图片没发出去：当前模型 vision 是关的。"})
         else:
             final_text = (
                 f"（已达到单轮最大工具调用轮次 {self.max_turns}，任务可能未完成。"

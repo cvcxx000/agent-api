@@ -13,6 +13,7 @@ from . import (
     py_tools,
     skill_tools,
     video_tools,
+    vision_tools,
     web_tools,
     workflow_tools,
 )
@@ -29,6 +30,7 @@ def build_registry(runtime: Any) -> ToolRegistry:
     web_tools.register(registry)
     media_tools.register(registry)
     video_tools.register(registry)
+    vision_tools.register(registry)
     skill_tools.register(registry, lambda: runtime.skills)
     plugin_tools.register(registry, lambda: runtime.plugins)
     agent_tools.register(registry, lambda: runtime)

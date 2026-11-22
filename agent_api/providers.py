@@ -44,7 +44,7 @@ def _tail(key: str) -> str:
 
 
 _VISION_RE = re.compile(
-    r"(vision|-vl\b|/vl|4o\b|4\.1|gemini|claude-3|glm-4v|omni|multimodal|pixtral|llava|qwen2[.-]?5?-vl|moonshot|kimi(?!-k2))",
+    r"(vision|-vl\b|/vl|4o\b|4\.1|gemini|claude-3|glm-4v|omni|multimodal|pixtral|llava|qwen2[.-]?5?-vl|moonshot|kimi(?!-k2)|sensenova|sensechat-v|6\.8-flash)",
     re.I,
 )
 

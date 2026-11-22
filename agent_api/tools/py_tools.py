@@ -116,6 +116,7 @@ def register(registry: ToolRegistry) -> None:
         "run_python",
         "在沙箱目录（cwd 为工作区根）用当前 Python 解释器执行一段代码，返回 exit code / stdout / stderr。"
         "适合做计算、处理文件、写脚本验证；超时会强制结束。"
+        "看图片别用它：用 view_image，让模型真的看到画面，而不是读像素去猜。"
         "删系统目录、调 subprocess 删文件这类高危代码会被拦一次，需要用户同意后带 confirm=true。",
         {
             "type": "object",
