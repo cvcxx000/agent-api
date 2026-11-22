@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -91,6 +92,11 @@ def run_python(ctx: ToolContext, args: dict[str, Any]) -> str:
     return header + "\n" + _format_output(stdout, stderr)
 
 
+def _shell_path() -> str:
+    """找 shell。Termux/Android 上没有 /bin/bash（只有 $PREFIX/bin/bash），所以不能写死。"""
+    return shutil.which("bash") or shutil.which("sh") or "/bin/sh"
+
+
 def run_shell(ctx: ToolContext, args: dict[str, Any]) -> str:
     if not settings.enable_shell:
         raise ToolError("服务端未启用 shell（需设置 ENABLE_SHELL=true）")
@@ -101,7 +107,7 @@ def run_shell(ctx: ToolContext, args: dict[str, Any]) -> str:
     if hits and not args.get("confirm"):
         raise ToolError(guard.refusal("run_shell", command, hits))
     timeout = max(1, min(int(args.get("timeout") or settings.shell_timeout), 600))
-    exit_code, stdout, stderr, elapsed = _run(["/bin/bash", "-lc", command], timeout)
+    exit_code, stdout, stderr, elapsed = _run([_shell_path(), "-lc", command], timeout)
     return f"[run_shell] exit={exit_code} time={elapsed:.2f}s\n" + _format_output(stdout, stderr)
 
 
@@ -124,13 +130,14 @@ def register(registry: ToolRegistry) -> None:
     )
     registry.register(
         "run_shell",
-        "执行 shell 命令（需 ENABLE_SHELL=true）。rm -rf 系统目录、提权、卸载软件包、重装系统这类"
-        "高危命令会被拦一次，先把风险说给用户，用户同意后带 confirm=true 重调。",
+        "执行 shell 命令（需 ENABLE_SHELL=true）。cwd 是 workspace，bash/sh 自动探测（兼容 Termux）。"
+        "rm -rf 系统目录、提权、卸载软件包、重启系统这类高危命令会被拦一次，"
+        "先把风险说给用户，用户同意后带 confirm=true 重调。",
         {
             "type": "object",
             "properties": {
                 "command": {"type": "string"},
-                "timeout": {"type": "integer", "description": f"秒，默认 {settings.shell_timeout}"},
+                "timeout": {"type": "integer", "description": f"秒，默认 {settings.shell_timeout}，上限 600"},
                 "confirm": {"type": "boolean", "description": "被高危闸门拦下、且用户已明确同意时传 true"},
             },
             "required": ["command"],
