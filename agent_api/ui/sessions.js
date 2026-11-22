@@ -391,16 +391,36 @@ async function showFiles(){
   const preview = document.createElement('div');
   preview.className = 'code';
   preview.textContent = '（在下面看文件内容）';
-  openBtn.addEventListener('click', async () => {
-    const p = fileInp.value.trim();
+  const viewRow = el('div', 'row2');
+  const renderBtn = mini('渲染 Markdown');
+  const rawBtn = mini('看原文');
+  viewRow.appendChild(renderBtn);
+  viewRow.appendChild(rawBtn);
+  w.appendChild(viewRow);
+  let lastPreview = null;
+  async function loadPreview(p, asMd){
     if (!p){ return; }
     preview.textContent = '读取中…';
     try{
-      const r = await apiGet('/api/files?path=' + encodeURIComponent(p) + '&limit=300');
-      preview.textContent = r.result || '(空文件)';
+      const r = await apiGet('/api/ui/preview?path=' + encodeURIComponent(p));
+      lastPreview = r;
+      if (asMd || (r.suffix === '.md' || r.suffix === '.markdown')){
+        preview.classList.add('mdbox');
+        preview.innerHTML = md(r.content || '');
+      } else {
+        preview.classList.remove('mdbox');
+        preview.textContent = r.content || '(空文件)';
+      }
     }catch (e){
+      preview.classList.remove('mdbox');
       preview.textContent = '读取失败：' + e.message;
     }
+  }
+  openBtn.addEventListener('click', () => loadPreview(fileInp.value.trim(), false));
+  renderBtn.addEventListener('click', () => loadPreview(fileInp.value.trim() || (lastPreview && lastPreview.path) || '', true));
+  rawBtn.addEventListener('click', () => {
+    preview.classList.remove('mdbox');
+    if (lastPreview){ preview.textContent = lastPreview.content || ''; }
   });
   w.appendChild(preview);
 }
