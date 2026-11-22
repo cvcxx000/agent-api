@@ -194,7 +194,7 @@ description: 把数据文件整理成 Markdown 报告，先校验再下结论
 
 ## 安全边界（请认真看）
 
-- **文件**：所有路径都做 `resolve()` 后校验必须位于 `SANDBOX_ROOT`，`../` 和软链接逃逸都会被拒绕。
+- **文件**：所有路径都做 `resolve()` 后校验必须位于 `SANDBOX_ROOT`，`../` 和软链接逃逸都会被拒绝。
 - **代码**：`run_python` 本质上就是本机代码执行，服务默认只适合本机/可信网络使用；对外暴露时务必设置 `API_TOKEN`，并考虑关闭 `ENABLE_PYTHON` 或改用容器隔离。
 - **鉴权**：`API_TOKEN` 为空 = 不鉴权；这是为了方便本机调试，不是默认安全配置。
 - **请求体**：超过 20MB 直接 413。
@@ -230,7 +230,7 @@ agent-api/
 python3 scripts/smoke_test.py
 ```
 
-会在临时沙箱里跑一遍：鉴权、文件读写、路径逃逸拦截、Python 执行与超时、Cookie、Skill 扫描、Mock 对话、运行时改系统提示词、载入 Skill、3 子 Agent 并发 + 第 4 个拒绕、工作流、SSE 流式。
+会在临时沙箱里跑一遍：鉴权、文件读写、路径逃逸拦截、Python 执行与超时、Cookie、Skill 扫描、Mock 对话、运行时改系统提示词、载入 Skill、3 子 Agent 并发 + 第 4 个拒绝、工作流、SSE 流式。
 
 ## 扩展
 
