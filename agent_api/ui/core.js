@@ -20,6 +20,27 @@ function isDigit(ch){
   const c = String(ch).charCodeAt(0);
   return c >= 48 && c <= 57;
 }
+function safeUrl(u){
+  const s = String(u || '').trim();
+  if (/^(https?:\/\/|data:image\/|\/files\/|\/ui\/|#)/i.test(s)){ return esc(s); }
+  if (s.charAt(0) === '/'){ return esc(s); }
+  return esc(s);
+}
+function linkMd(s){
+  return String(s)
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, t, u) =>
+      '<a class="md-a" href="' + safeUrl(u) + '" target="_blank" rel="noreferrer noopener">' + esc(t) + '</a>')
+    .replace(/(^|[\s（(])(https?:\/\/[^\s<）)"]+)/g, (m, p, u) =>
+      p + '<a class="md-a" href="' + safeUrl(u) + '" target="_blank" rel="noreferrer noopener">' + esc(u) + '</a>');
+}
+function boldMd(s){
+  const parts = String(s).split('**');
+  let out = '';
+  for (let i = 0; i < parts.length; i++){
+    out += (i % 2 === 1) ? '<b>' + linkMd(parts[i]) + '</b>' : linkMd(parts[i]);
+  }
+  return out;
+}
 function inlineMd(s){
   const parts = String(s).split('`');
   let out = '';
@@ -28,61 +49,85 @@ function inlineMd(s){
   }
   return out;
 }
-function boldMd(s){
-  const parts = String(s).split('**');
-  let out = '';
-  for (let i = 0; i < parts.length; i++){
-    out += (i % 2 === 1) ? '<b>' + esc(parts[i]) + '</b>' : esc(parts[i]);
-  }
-  return out;
-}
 function codeBlock(raw){
   let body = String(raw);
+  let lang = '';
   const p = body.indexOf(NL);
   if (p >= 0 && body.slice(0, p).length <= 20 && body.slice(0, p).indexOf(' ') < 0){
+    lang = body.slice(0, p).trim();
     body = body.slice(p + 1);
   }
   while (body.slice(-1) === NL){ body = body.slice(0, -1); }
-  return '<div class="code">' + esc(body) + '</div>';
+  return '<div class="codebox"><div class="codebar"><span class="lang">' + esc(lang || 'text') +
+    '</span><button class="copy" type="button">复制</button></div><pre class="code">' + esc(body) + '</pre></div>';
 }
+const IMG_RE = /^!\[([^\]]*)\]\(([^)\s]+)\)$/;
+const VID_RE = /^(\/files\/[^\s]+\.(?:mp4|webm|mov))$/i;
+
 function textBlocks(txt){
   const lines = String(txt).split(NL);
   let html = '';
   let para = [];
   let inList = false;
+  let inQuote = false;
   function flushPara(){
     if (para.length){ html += '<p>' + inlineMd(para.join(' ')) + '</p>'; para = []; }
   }
   function closeList(){
     if (inList){ html += '</ul>'; inList = false; }
   }
+  function closeQuote(){
+    if (inQuote){ html += '</blockquote>'; inQuote = false; }
+  }
   for (let i = 0; i < lines.length; i++){
     const t = lines[i].trim();
-    if (!t){ flushPara(); closeList(); continue; }
+    if (!t){ flushPara(); closeList(); closeQuote(); continue; }
+
+    const img = t.match(IMG_RE);
+    if (img){
+      flushPara(); closeList(); closeQuote();
+      html += '<div class="md-fig"><a href="' + safeUrl(img[2]) + '" target="_blank" rel="noreferrer noopener">' +
+        '<img class="md-img" loading="lazy" alt="' + esc(img[1]) + '" src="' + safeUrl(img[2]) + '"></a></div>';
+      continue;
+    }
+    const vid = t.match(VID_RE);
+    if (vid){
+      flushPara(); closeList(); closeQuote();
+      html += '<div class="md-fig"><video class="md-video" controls playsinline preload="metadata" src="' +
+        safeUrl(vid[1]) + '"></video></div>';
+      continue;
+    }
+
     if (t.slice(0, 2) === '- ' || t.slice(0, 2) === '* '){
-      flushPara();
+      flushPara(); closeQuote();
       if (!inList){ html += '<ul>'; inList = true; }
       html += '<li>' + inlineMd(t.slice(2)) + '</li>';
+      continue;
+    }
+    if (t.charAt(0) === '>'){
+      flushPara(); closeList();
+      if (!inQuote){ html += '<blockquote>'; inQuote = true; }
+      html += inlineMd(t.slice(1).trim()) + '<br>';
       continue;
     }
     if (t.charAt(0) === '#'){
       let lvl = 0;
       while (t.charAt(lvl) === '#'){ lvl += 1; }
       if (lvl > 0 && lvl < 7){
-        flushPara(); closeList();
+        flushPara(); closeList(); closeQuote();
         html += '<div class="h h' + lvl + '">' + inlineMd(t.slice(lvl).trim()) + '</div>';
         continue;
       }
     }
     const dot = t.indexOf('. ');
     if (dot > 0 && dot < 4 && isDigit(t.charAt(0))){
-      flushPara(); closeList();
+      flushPara(); closeList(); closeQuote();
       html += '<p>' + inlineMd(t) + '</p>';
       continue;
     }
     para.push(t);
   }
-  flushPara(); closeList();
+  flushPara(); closeList(); closeQuote();
   return html;
 }
 function md(text){
@@ -92,6 +137,30 @@ function md(text){
     out += (i % 2 === 1) ? codeBlock(parts[i]) : textBlocks(parts[i]);
   }
   return out;
+}
+
+document.addEventListener('click', (ev) => {
+  const btn = ev.target.closest ? ev.target.closest('.copy') : null;
+  if (!btn){ return; }
+  const pre = btn.parentElement && btn.parentElement.parentElement
+    ? btn.parentElement.parentElement.querySelector('pre') : null;
+  const text = pre ? pre.textContent : '';
+  const done = () => { btn.textContent = '已复制'; setTimeout(() => { btn.textContent = '复制'; }, 1200); };
+  if (navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
+  } else {
+    fallbackCopy(text, done);
+  }
+});
+function fallbackCopy(text, done){
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); done(); } catch (e) { note('复制失败，手动选中吧'); }
+  ta.remove();
 }
 
 function wrapEl(){ return $('wrap'); }
@@ -107,10 +176,23 @@ function note(text, cls){
 function showSession(){
   $('sid').textContent = 'session: ' + (sessionId ? sessionId : '新建');
 }
-function addUser(text){
+function addUser(text, attachments){
   const d = document.createElement('div');
   d.className = 'msg user';
   d.innerHTML = '<div class="who">你</div><div class="bubble">' + esc(text) + '</div>';
+  const list = attachments || [];
+  if (list.length){
+    const thumbs = document.createElement('div');
+    thumbs.className = 'bubble-thumbs';
+    list.forEach((a) => {
+      const img = document.createElement('img');
+      img.src = a.url || ('/files/' + a.path);
+      img.alt = a.name || '附件';
+      img.loading = 'lazy';
+      thumbs.appendChild(img);
+    });
+    d.appendChild(thumbs);
+  }
   wrapEl().appendChild(d);
   scrollDown();
   return d;
@@ -154,6 +236,30 @@ function fillTool(id, name, output, ok){
   }
   rec.out.textContent = text || '(空输出)';
   if (ok === false){ rec.el.open = true; }
+  const media = String(text || '');
+  const imgMatch = media.match(/MEDIA_IMAGE: (\S+)/);
+  const vidMatch = media.match(/MEDIA_VIDEO: (\S+)/);
+  const holder = rec.el.querySelector('.mediaHolder') || document.createElement('div');
+  holder.className = 'mediaHolder';
+  if (imgMatch){
+    holder.innerHTML = '';
+    const img = document.createElement('img');
+    img.className = 'md-img';
+    img.src = imgMatch[1];
+    img.alt = name;
+    img.loading = 'lazy';
+    holder.appendChild(img);
+  } else if (vidMatch){
+    holder.innerHTML = '';
+    const video = document.createElement('video');
+    video.className = 'md-video';
+    video.controls = true;
+    video.playsInline = true;
+    video.preload = 'metadata';
+    video.src = vidMatch[1];
+    holder.appendChild(video);
+  }
+  if (holder.innerHTML){ rec.el.appendChild(holder); }
   scrollDown();
 }
 
@@ -173,7 +279,7 @@ async function apiPost(path, body){
   const text = await resp.text();
   let data = null;
   try { data = JSON.parse(text); } catch (e) { data = { raw: text }; }
-  if (!resp.ok){ throw new Error('HTTP ' + resp.status + ' ' + text.slice(0, 160)); }
+  if (!resp.ok){ throw new Error((data && data.error) || ('HTTP ' + resp.status + ' ' + text.slice(0, 160))); }
   return data;
 }
 
@@ -182,7 +288,7 @@ async function apiDelete(path){
   const text = await resp.text();
   let data = null;
   try { data = JSON.parse(text); } catch (e) { data = { raw: text }; }
-  if (!resp.ok){ throw new Error('HTTP ' + resp.status + ' ' + text.slice(0, 160)); }
+  if (!resp.ok){ throw new Error((data && data.error) || ('HTTP ' + resp.status + ' ' + text.slice(0, 160))); }
   return data;
 }
 async function refreshStatus(){
@@ -203,6 +309,11 @@ async function refreshProviderSummary(){
     $('providerSub').textContent = n + ' 家 · ' + on + ' 家启用 · ' + cur;
     $('curModel').textContent = (j.current && j.current.base_url)
       ? (cur + ' @ ' + j.current.base_url) : '未配置';
+    const chip = $('modelChip');
+    if (chip){
+      const active = providersCache.find(p => p.is_active);
+      chip.textContent = active ? (active.name + ' · ' + (j.current.model || '')) : '未配置模型';
+    }
   }catch (e){
     $('providerSub').textContent = '读取失败：' + e.message;
   }
