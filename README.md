@@ -17,6 +17,14 @@
 | 允许设置系统提示词 | 全局默认 + 每会话覆盖 + 运行中 `set_system_prompt` 工具/接口 |
 | 运行中新开会话、分派子任务 | `spawn_agent` 创建独立子会话并后台执行，父 Agent 用 `wait_agent` 收结果 |
 | 一次只能分配三个 | `AGENT_MAX_SUBAGENTS=3`，第 4 个直接 409，不会悄悄排队 |
+| 多家提供商 / 真实模型 | 网页「提供商」→ 从目录添加 → 填 Key → **拉取模型**（`GET {base}/models`），只列真实存在的模型；没 Key 的空壳启动时自动清理 |
+| 思考结果 | DeepSeek `reasoning_content`、`reasoning`、`thinking` 都能识别，SSE 里单独发 `reasoning_delta`，网页折叠成「思考过程」 |
+| 生成图片 | `generate_image` 工具 + 设置页「图片生成」，OpenAI 形状 `POST /images/generations`，产物落 `workspace/media/` |
+| 生成视频 | `generate_video` 工具 + 设置页「视频生成」，支持 OpenAI `/videos`、硅基流动 `/video/submit`、通用异步三种轮询 |
+| 搜索配置 | 设置页「搜索服务」：Tavily / 博查 / Serper / DuckDuckGo（免 Key）/ 自定义 JSON 网关；Agent 用 `web_search` + `fetch_url` |
+| 画板 | 网页里手绘草图 → 自动作为图片附件随下一句话发给模型（需在该提供商页打开 Vision） |
+| 终端版界面 | `python3 scripts/tui.py`：流式思考/正文/工具卡、`/model` 选模型、`/image`、`/video`、`/search`、`/md` 渲染 |
+| Markdown「点得动」 | 链接可点、`![](…)` 出图、`/files/*.mp4` 出视频、代码块一键复制、文件面板可直接渲染 MD |
 
 ## 快速开始
 
@@ -29,7 +37,7 @@ python3 run.py
 启动后有两种用法都能用：
 
 - **网页**：手机/电脑浏览器打开 `http://127.0.0.1:8000/ui`（或根路径 `/`），直接聊，工具调用实时显示。
-- **终端**：另一个窗口跑 `python3 scripts/repl.py`，纯终端交互。
+- **终端**：另一个窗口跑 `python3 scripts/tui.py`（流式 TUI）或 `python3 scripts/repl.py`（轻量 REPL）。
 
 打开 `http://127.0.0.1:8000/health` 看到 `{"ok": true}` 就说明起来了。
 
@@ -49,14 +57,27 @@ python run.py
 
 ### 1）网页 UI（`/ui`）
 
-单文件 HTML，无 CDN、无构建步骤，风格是深灰字 + 陶土色强调的气泡对话：
+单文件 HTML，无 CDN、无构建步骤，视觉是 iOS inset grouped 为主，叠华为 HarmonyOS 的大圆角/渐变图标与 vivo 的留白节奏，自带深色模式：
 
-- 工具调用以可折叠卡片实时出现，展开看参数和输出；
-- SSE 流式，边生成边显示，可随时点「停止」中断；
-- 「设置」里填 `X-API-Token`、服务地址、**系统提示词**，全部存在浏览器本地；
-- 「新会话」按钮清空会话 id，下一次提问就是全新 session。
+- **提供商**：先「从目录添加」（11 家 LLM 模板，只给地址和说明，不预置假模型），填 Key 后点「拉取模型」调服务商 `GET /models`，拉回来的是真实列表；模型选择器里点一行立即切换；
+- 顶部模型胶囊显示当前提供商 + 模型，没配就写「未配置模型」，不会假装有；
+- 思考过程单独折叠成一张卡，正文流式逐字；工具调用是折叠卡，参数和输出都在；
+- 输入区支持粘贴/选择图片（作为附件），画板 `✎` 手绘后也能直接附上；
+- 图片生成、视频生成、搜索结果都会在对话里直接出图 / 出片 / 出列表；
+- Markdown 里的链接可点、图片直接显示、代码块带「复制」；
+- 「设置」分成默认模型、提供商、搜索服务、图片生成、视频生成、Web 服务器、数据备份、引擎与限流；
+- 「终端版」入口会告诉你 `python3 scripts/tui.py` 怎么连。
 
-### 2）终端 REPL（`scripts/repl.py`）
+### 2）终端界面（`scripts/tui.py`）
+
+```bash
+python3 scripts/tui.py                                   # 默认 http://127.0.0.1:8000
+python3 scripts/tui.py --base http://127.0.0.1:8000 --token 你的TOKEN
+```
+
+命令：`/model`（列真实模型挑编号，立即切换）、`/providers`、`/search 关键词`、`/image 提示词`、`/video 提示词`、`/md 路径`（把 Markdown 渲染成终端样式）、`/file 路径`、`/new`、`/session`、`/quit`。其余输入直接发给 Agent，思考（暗色）、正文（绿色）、工具卡（品红）都是流式的。
+
+### 3）终端 REPL（`scripts/repl.py`）
 
 ```bash
 python3 scripts/repl.py                              # 默认连 127.0.0.1:8000
@@ -65,7 +86,7 @@ python3 scripts/repl.py --base http://1.2.3.4:8000 --token abc
 
 内置命令：`/new` 开新会话、`/session` 看当前 id、`/system <文本>` 改系统提示词、`/system-` 清空、`/help`、`/exit`。工具调用与输出直接打在屏幕上。
 
-### 3）curl / 代码调用
+### 4）curl / 代码调用
 
 见下方「接口一览」与 curl 示例，适合接到别的程序里。
 
@@ -99,9 +120,9 @@ python3 scripts/repl.py --base http://1.2.3.4:8000 --token abc
 
 注意：Agent 每回一次话可能花掉多次请求（调工具 → 再调模型），所以 7 次额度下“一句话”大约能跑 3 到 4 轮工具循环。想快点就把这个值调大，或换成正常额度的 Key 设 `0`。
 
-### 日日新（商汤 SenseNova）填法
+### 日日新（商榘 SenseNova）填法
 
-商汤有两套 OpenAI 兼容入口，路径只填到 `/v1`（程序会自己拼 `/chat/completions`）：
+商榘有两套 OpenAI 兼容入口，路径只填到 `/v1`（程序会自己拼 `/chat/completions`）：
 
 | 平台 | `LLM_BASE_URL` | 说明 |
 | --- | --- | --- |
@@ -128,6 +149,21 @@ curl -s https://token.sensenova.cn/v1/chat/completions \
 | GET | `/health` | 健康检查 |
 | GET | `/api/config` | 当前配置（不含密钥） |
 | GET | `/api/tools` | 已注册工具及其 JSON Schema |
+| GET | `/api/providers` | 提供商列表 + 当前模型（只列真的存在的条目和模型） |
+| GET | `/api/providers/catalog` | 预置模板目录（11 家 LLM / 图片 / 视频 / 搜索） |
+| POST | `/api/providers` / `/api/providers/add` | 自定义添加 / 从模板添加（不自动造模型） |
+| POST | `/api/providers/{pid}/fetch-models` | 调服务商 `GET /models`，写回真实模型列表 |
+| POST | `/api/providers/{pid}/activate` | 切到该提供商的某个模型（立即重建客户端） |
+| POST | `/api/providers/{pid}/vision` | 该提供商是否支持图片输入（多模态附件） |
+| POST | `/api/providers/prune` | 清理「没 Key 又不是当前在用」的空壳 |
+| GET / POST | `/api/ui/settings`、`/api/ui/llm`、`/api/ui/prompt` | 设置摘要 / 运行时覆盖 / 默认提示词 |
+| GET / POST | `/api/ui/search` | 搜索服务配置（Tavily / 博查 / Serper / DDG / 自定义） |
+| POST | `/api/ui/search/test` | 直接试搜一条（网页和 TUI 都用它） |
+| GET / POST | `/api/ui/media`、`/api/ui/media/{kind}` | 图片/视频生成配置（`kind=image|video`） |
+| POST | `/api/ui/media/{kind}/generate` | 手动试生成，产物落 `workspace/media/` |
+| POST | `/api/ui/upload` | 图片附件上传（base64 data_url，≤8MB） |
+| GET | `/api/ui/preview?path=` | 沙箱内文本/Markdown 预览（2MB 上限、防越界） |
+| GET | `/files/media/{name}`、`/files/uploads/{name}` | 生成的图片/视频与上传附件（文件名白名单 + 防穿越） |
 | POST | `/api/chat` | 对话，返回最终答复 + 每一步工具调用 |
 | POST | `/api/chat/stream` | 同上，SSE 逐事件推送 |
 | GET / POST | `/api/sessions` | 会话列表 / 新建 |
@@ -174,7 +210,7 @@ curl -s -X POST http://127.0.0.1:8000/api/execute/python \
   -d '{"code":"import sys; print(sys.version)"}'
 ```
 
-SSE 事件类型：`user` / `assistant` / `tool_call` / `tool_result` / `warning` / `error` / `end` / `final`。
+SSE 事件类型：`user` / `reasoning_delta`（思考逐字） / `content_delta`（正文逐字） / `assistant` / `tool_call` / `tool_result` / `warning` / `error` / `end` / `final`。
 
 ## 内置工具
 
@@ -192,6 +228,10 @@ SSE 事件类型：`user` / `assistant` / `tool_call` / `tool_result` / `warning
 | `list_workflows` `run_workflow` | 工作流 |
 | `spawn_agent` `wait_agent` `list_agents` `cancel_agent` | 子任务编排 |
 | `set_system_prompt` `get_system_prompt` `list_tools` | 运行时自省与自我约束 |
+| `web_search` | 走设置页配的搜索服务，返回 title/url/snippet |
+| `fetch_url` | 打开一个网页，去脚本/样式后转纯文本 |
+| `generate_image` | 按提示词出图，落 `workspace/media/`，输出 `![…](/files/media/…)` |
+| `generate_video` | 提交异步视频任务并轮询，落 `workspace/media/`，输出 `MEDIA_VIDEO:` 标记 |
 
 ## 子 Agent 机制
 
@@ -268,21 +308,28 @@ agent-api/
 │  ├─ api.py                  # 所有接口实现
 │  ├─ webui.py                # 单文件网页聊天页（/ 、/ui）
 │  ├─ agent.py                # 模型→工具循环
-│  ├─ llm.py                  # urllib 调 OpenAI 兼容接口 + Mock + 限速
+│  ├─ llm.py                  # urllib 调 OpenAI 兼容接口 + SSE 思考流 + Mock + 限速
+│  ├─ providers.py            # 提供商目录 / 真实模型拉取 / 空壳清理 / Vision
+│  ├─ presets.py              # 四类预置模板（LLM / 图片 / 视频 / 搜索）
+│  ├─ media.py                # 图片与视频生成（三种视频轮询形状）
+│  ├─ search.py               # 五种搜索实现
+│  ├─ net.py                  # urllib 小封装 + 真实错误回传
 │  ├─ sessions.py             # 会话落盘 + 子 Agent 线程调度
 │  ├─ skills.py               # SKILL.md 扫描
 │  ├─ workflows.py            # JSON 工作流引擎
 │  ├─ cookies.py              # Cookie 仓库
 │  ├─ security.py             # 沙箱与鉴权
-│  ├─ tools/                  # 各类工具实现
+│  ├─ ui/                     # page.html + app.css + core/sessions/canvas/chat/providers/settings.js
+│  ├─ tools/                  # 各类工具实现（含 web_tools / media_tools）
 │  └─ prompts/default_system.md
 ├─ skills/data-report/SKILL.md
 ├─ workflows/demo_pipeline.json
 ├─ workspace/                 # 默认沙箱（Agent 的文件都在这）
 ├─ data/                      # 会话 / Cookie / 临时脚本
 └─ scripts/
-   ├─ repl.py                 # 终端交互式对话
-   └─ smoke_test.py           # 端到端自检（22 项）
+   ├─ repl.py                 # 终端交互式对话（轻量）
+   ├─ tui.py                  # 终端界面（思考/正文/工具流式 + /model /image /video /search /md）
+   └─ smoke_test.py           # 端到端自检（42 项）
 ```
 
 ## 自检
@@ -291,7 +338,7 @@ agent-api/
 python3 scripts/smoke_test.py
 ```
 
-会在临时沙箱里跑一遍：鉴权、文件读写、路径逃逸拦截、Python 执行与超时、Cookie、Skill 扫描、Mock 对话、运行时改系统提示词、载入 Skill、3 子 Agent 并发 + 第 4 个拒绝、工作流、SSE 流式。
+会在临时沙箱里跑一遍：鉴权、文件读写、路径逃逸拦截、Python 执行与超时、Cookie、Skill 扫描、Mock 对话、运行时改系统提示词、载入 Skill、3 子 Agent 并发 + 第 4 个拒绝、工作流、SSE 流式与思考流、提供商空种/目录/自定义模型/切换/清理、搜索与图片视频配置、上传、Markdown 预览越界、全部前端静态资源。
 
 ## 扩展
 
