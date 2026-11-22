@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""端到端自检：不依赖真实大模型（LLM_MOCK=true），把工具、接口、子 Agent 全跑一遍。
+
+用法：python scripts/smoke_test.py
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import sys
+import threading
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+SMOKE = ROOT / "data" / "_smoke"
+shutil.rmtree(SMOKE, ignore_errors=True)
+
+os.environ["LLM_MOCK"] = "true"
+os.environ["API_TOKEN"] = "smoke-token"
+os.environ["SANDBOX_ROOT"] = str(SMOKE / "workspace")
+os.environ["DATA_DIR"] = str(SMOKE / "data")
+os.environ["WORKFLOWS_DIR"] = str(ROOT / "workflows")
+os.environ["SKILLS_DIRS"] = str(ROOT / "skills")
+
+from agent_api.runtime import create_runtime  # noqa: E402
+from agent_api.server import build_server  # noqa: E402
+
+runtime = create_runtime()
+server = build_server(runtime, "127.0.0.1", 0)
+PORT = server.server_address[1]
+threading.Thread(target=server.serve_forever, name="smoke-server", daemon=True).start()
+
+passed: list[str] = []
+failed: list[str] = []
+
+
+def check(name: str, condition: bool, detail: str = "") -> None:
+    if condition:
+        passed.append(name)
+        print(f"PASS  {name}")
+    else:
+        failed.append(f"{name} :: {detail}")
+        print(f"FAIL  {name}  {detail}")
+
+
+def call(method: str, path: str, body: dict | None = None, token: str | None = "smoke-token", timeout: float = 60.0):
+    url = f"http://127.0.0.1:{PORT}{path}"
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["X-API-Token"] = token
+    request = urllib.request.Request(url, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+            return resp.status, raw
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", "replace")
+
+
+def jcall(method: str, path: str, body: dict | None = None, token: str | None = "smoke-token", timeout: float = 60.0):
+    status, raw = call(method, path, body, token, timeout)
+    try:
+        return status, json.loads(raw)
+    except json.JSONDecodeError:
+        return status, {"raw": raw}
+
+
+status, body = jcall("GET", "/health", token=None)
+check("health", status == 200 and body.get("ok") is True, str(body))
+
+status, body = jcall("GET", "/api/tools")
+tools = {t["name"] for t in body.get("tools", [])}
+expected = {"read_file", "write_file", "run_python", "get_cookie", "spawn_agent", "load_skill", "run_workflow"}
+check("tools registered", expected <= tools, f"missing={expected - tools}")
+
+status, body = jcall("GET", "/api/tools", token=None)
+check("auth blocks without token", status == 401, str(body)[:200])
+
+status, body = jcall("POST", "/api/files", {"path": "hello.txt", "content": "第一行\n第二行\n"})
+check("write_file", body.get("ok") is True, str(body)[:200])
+
+status, body = jcall("GET", "/api/files?path=hello.txt")
+check("read_file", "第一行" in body.get("result", ""), str(body)[:300])
+
+status, body = jcall("POST", "/api/files", {"path": "../escape.txt", "content": "x"})
+check("sandbox blocks escape", body.get("ok") is False, str(body)[:300])
+
+status, body = jcall("POST", "/api/execute/python", {"code": "print(sum(range(10)))"})
+check("run_python", "45" in body.get("result", ""), str(body)[:300])
+
+status, body = jcall("POST", "/api/execute/python", {"code": "import time; time.sleep(5)", "timeout": 1})
+check("python timeout", body.get("ok") is False and "超时" in body.get("result", ""), str(body)[:300])
+
+status, body = jcall("POST", "/api/cookies", {"domain": "example.com", "cookie": "a=1; b=2"})
+check("set_cookie", body.get("count") == 2, str(body)[:200])
+
+status, body = jcall("GET", "/api/cookies/example.com/header")
+check("cookie header", "a=1" in body.get("cookie_header", ""), str(body)[:200])
+
+status, body = jcall("GET", "/api/skills")
+names = [s["name"] for s in body.get("skills", [])]
+check("skills scanned", "data-report" in names, str(names))
+
+status, body = jcall("POST", "/api/chat", {"message": "自检：跑一下环境", "title": "smoke"})
+step_names = [s.get("name") for s in body.get("steps", []) if s.get("type") == "tool"]
+check("chat mock tool loop", status == 200 and "run_python" in step_names, json.dumps(body, ensure_ascii=False)[:400])
+
+session_id = body.get("session_id")
+status, body = jcall("POST", f"/api/sessions/{session_id}/system-prompt", {"prompt": "你是一个自检助手。", "mode": "append"})
+check("runtime system prompt", body.get("ok") is True, str(body)[:200])
+
+status, body = jcall("POST", f"/api/sessions/{session_id}/skills/data-report", {})
+check("load skill", body.get("ok") is True, str(body)[:200])
+
+spawned = []
+for i in range(3):
+    status, body = jcall("POST", "/api/subagents", {"task": f"子任务 {i}：print({i})", "parent_session_id": session_id})
+    if status == 200:
+        spawned.append(body["id"])
+check("spawn 3 subagents", len(spawned) == 3, str(body)[:200])
+
+status, body = jcall("POST", "/api/subagents", {"task": "第 4 个", "parent_session_id": session_id})
+check("4th subagent rejected", status == 409, str(body)[:300])
+
+for sub_id in spawned:
+    status, body = jcall("POST", f"/api/subagents/{sub_id}/wait", {"timeout": 30}, timeout=60)
+    check(f"subagent done {sub_id[:8]}", body.get("status") == "done", str(body)[:300])
+
+status, body = jcall("GET", "/api/subagents")
+check("subagents released slots", body.get("active") == 0, str(body)[:200])
+
+status, body = jcall("POST", "/api/workflows/demo_pipeline/run", {"inputs": {}})
+check("workflow run", bool(body.get("outputs", {}).get("stats")), json.dumps(body, ensure_ascii=False)[:400])
+
+status, raw = call("POST", "/api/chat/stream", {"message": "流式自检", "session_id": session_id}, timeout=60)
+check("chat stream", status == 200 and "event: end" in raw and "event: final" in raw, raw[:300])
+
+server.shutdown()
+server.server_close()
+
+print()
+print(f"结果：{len(passed)} 通过，{len(failed)} 失败")
+if failed:
+    for item in failed:
+        print(" -", item)
+    sys.exit(1)
