@@ -9,6 +9,8 @@
     /new             新会话
     /model           选提供商和模型（列表里挑编号，立即生效）
     /providers       列出提供商与模型
+    /skills          列出所有技能（SKILL.md）
+    /skill 名字       把技能载入当前会话
     /search 关键词    直接查搜索服务
     /image 提示词     直接生成图片
     /video 提示词     直接生成视频（异步，会等）
@@ -16,6 +18,8 @@
     /file 路径        看纯文本
     /quit            退出
 其余输入都会作为一句话发给 Agent，思考/正文/工具调用都是流式打印。
+
+打 / 回车看命令清单，Tab 补全命令名，`/skill ` 后 Tab 补全技能名。
 """
 
 from __future__ import annotations
@@ -328,6 +332,8 @@ HELP = """\
   /new             新会话
   /model           选提供商和模型（列表挑编号）
   /providers       列出提供商与模型
+  /skills          列出所有技能
+  /skill 名字       载入技能到当前会话
   /search 关键词    查搜索服务
   /image 提示词     生成图片
   /video 提示词     生成视频
@@ -338,6 +344,93 @@ HELP = """\
 其他输入直接发给 Agent。Ctrl+C 中断当前显示（不中断服务端任务）。"""
 
 
+COMMANDS = [
+    ("/help", "命令列表"),
+    ("/model", "选模型（真实列表，编号即切）"),
+    ("/providers", "看提供商与模型"),
+    ("/skills", "列出所有技能"),
+    ("/skill", "载入技能：/skill 名字"),
+    ("/search", "搜网：/search 黄金价格"),
+    ("/image", "出图：/image 一只猫"),
+    ("/video", "出片：/video 海浪慢镜头"),
+    ("/md", "渲染 Markdown：/md 笔记.md"),
+    ("/file", "看文本：/file 路径"),
+    ("/new", "开新会话"),
+    ("/session", "看当前会话 id"),
+    ("/quit", "退出"),
+]
+
+_SKILLS = []
+
+
+def _skill_names(api):
+    global _SKILLS
+    if not _SKILLS:
+        try:
+            data = api.get("/api/skills")
+            _SKILLS = [str(x.get("name") or "") for x in (data.get("skills") or [])]
+        except SystemExit:
+            _SKILLS = []
+    return [n for n in _SKILLS if n]
+
+
+def _cands(api, buf):
+    if buf.startswith("/skill "):
+        return _skill_names(api)
+    if buf.startswith("/"):
+        head = buf.split(" ")[0]
+        return [k for k, _ in COMMANDS if k.startswith(head)]
+    return []
+
+
+def _setup_readline(api):
+    try:
+        import readline
+    except ImportError:
+        return
+
+    def comp(text, i):
+        cands = _cands(api, readline.get_line_buffer())
+        return cands[i] if i < len(cands) else None
+
+    readline.set_completer_delims(" ")
+    readline.set_completer(comp)
+    readline.parse_and_bind("tab: complete")
+
+
+def print_cmds():
+    print(c(DIM, "命令（打 / 看清单，Tab 补全）："))
+    for k, d in COMMANDS:
+        print("  " + c(CYAN, k.ljust(11)) + c(DIM, d))
+
+
+def cmd_skills(api):
+    data = api.get("/api/skills")
+    items = data.get("skills") or []
+    if not items:
+        print(c(DIM, "没有技能：把 SKILL.md 放进 skills/ 或 workspace/.skills/"))
+        return
+    for x in items:
+        print("  " + c(CYAN, str(x.get("name") or "").ljust(16)) + c(DIM, str(x.get("description") or "")[:70]))
+    print(c(DIM, "载入：/skill 名字（写进当前会话系统提示词，长期生效）"))
+
+
+def cmd_load_skill(api, state, name):
+    if not name:
+        print(c(RED, "用法：/skill 名字（先 /skills 看列表）"))
+        return
+    sid = state.get("session") or ""
+    if not sid:
+        print(c(RED, "先随便说一句话开个会话，再载技能"))
+        return
+    try:
+        api.post("/api/sessions/" + sid + "/skills/" + name, {})
+    except SystemExit as exc:
+        print(c(RED, str(exc)))
+        return
+    print(c(GREEN, "已载入技能 " + name))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="agent-api 终端界面")
     parser.add_argument("--base", default="http://127.0.0.1:8000", help="服务地址")
@@ -346,6 +439,7 @@ def main() -> None:
     args = parser.parse_args()
     api = Api(args.base, args.token)
     state = {"session": args.session}
+    _setup_readline(api)
 
     print(c(BOLD, "agent-api") + c(DIM, f"  {api.base}   /help 看命令"))
     try:
@@ -363,10 +457,23 @@ def main() -> None:
             break
         if not line:
             continue
+        if line.startswith("/") and " " not in line:
+            hits = [k for k, _ in COMMANDS if k.startswith(line)]
+            if len(hits) == 1 and hits[0] != line:
+                line = hits[0]
         if line in {"/quit", "/exit", "exit"}:
             break
         if line == "/help":
             print(HELP)
+            continue
+        if line == "/":
+            print_cmds()
+            continue
+        if line == "/skills":
+            cmd_skills(api)
+            continue
+        if line.startswith("/skill "):
+            cmd_load_skill(api, state, line[len("/skill "):].strip())
             continue
         if line == "/new":
             state["session"] = ""
