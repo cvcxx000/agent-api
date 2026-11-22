@@ -1,6 +1,6 @@
 """给模型用的插件管理工具：列出 / 新建 / 改 / 开关 / 重载 / 删除。
 
-设计意图（「万物皆插件」）：模型遇到自己没有的能力时，可以自己写一个插件装上，
+设计意图（「万物皆插件」）：模型遇到自己没有的能力时，可以自己写个插件装上，
 下次同类任务直接调工具，而不是每次都现写临时脚本。写代码不算数，
 **启用才算**——启用要用户点头（confirm=true）。
 """
@@ -118,7 +118,7 @@ def register(registry: ToolRegistry, get_manager: GetManager) -> None:
         manager = get_manager()
         result = manager.disable(str(args.get("name") or "").strip())
         removed = ", ".join(result.get("removed_tools") or []) or "（本来就没装载）"
-        return f"插件 {result['name']} 已停用，撑下的工具已移除：{removed}"
+        return f"插件 {result['name']} 已停用，已移除工具：{removed}"
 
     def plugin_reload(ctx: ToolContext, args: dict[str, Any]) -> str:
         manager = get_manager()
