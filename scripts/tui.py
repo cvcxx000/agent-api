@@ -16,6 +16,7 @@
     /video 提示词     直接生成视频（异步，会等）
     /md 路径          把 workspace 里的 Markdown 渲染到终端
     /file 路径        看纯文本
+    /sessions        列出会话，输编号切换
     /quit            退出
 其余输入都会作为一句话发给 Agent，思考/正文/工具调用都是流式打印。
 
@@ -339,6 +340,7 @@ HELP = """\
   /video 提示词     生成视频
   /md 路径          渲染 workspace 里的 Markdown
   /file 路径        看纯文本
+  /sessions        列出会话，输编号切换
   /session         看当前 session id
   /quit            退出
 其他输入直接发给 Agent。Ctrl+C 中断当前显示（不中断服务端任务）。"""
@@ -355,7 +357,7 @@ COMMANDS = [
     ("/video", "出片：/video 海浪慢镜头"),
     ("/md", "渲染 Markdown：/md 笔记.md"),
     ("/file", "看文本：/file 路径"),
-    ("/new", "开新会话"),
+    ("/sessions", "列出会话并切换"),
     ("/session", "看当前会话 id"),
     ("/quit", "退出"),
 ]
@@ -431,6 +433,26 @@ def cmd_load_skill(api, state, name):
     print(c(GREEN, "已载入技能 " + name))
 
 
+def cmd_sessions(api, state):
+    data = api.get("/api/sessions")
+    items = [x for x in (data.get("sessions") or []) if x.get("kind", "main") == "main"][:20]
+    if not items:
+        print(c(DIM, "还没有会话"))
+        return
+    cur = state.get("session") or ""
+    for i, item in enumerate(items, 1):
+        mark = "*" if item.get("id") == cur else " "
+        title = item.get("title") or "未命名"
+        sid = str(item.get("id") or "")
+        print(f" {c(DIM, f'[{i}]')}{mark} {c(BOLD, title)}  {c(DIM, sid[-6:] + ' · ' + str(item.get('updated_at') or '')[:16])}")
+    raw = input(c(CYAN, "编号切换（回车取消）：")).strip()
+    if not raw.isdigit() or not (1 <= int(raw) <= len(items)):
+        return
+    picked = items[int(raw) - 1]
+    state["session"] = picked.get("id") or ""
+    print(c(GREEN, "已切到 " + str(picked.get("title") or state["session"])))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="agent-api 终端界面")
     parser.add_argument("--base", default="http://127.0.0.1:8000", help="服务地址")
@@ -484,6 +506,12 @@ def main() -> None:
         if line == "/new":
             state["session"] = ""
             print(c(DIM, "已开新会话。"))
+            continue
+        if line == "/sessions":
+            try:
+                cmd_sessions(api, state)
+            except (RuntimeError, SystemExit) as exc:
+                print(c(RED, str(exc)))
             continue
         if line == "/session":
             print(c(DIM, "session: " + (state.get("session") or "（下一句新建）")))
