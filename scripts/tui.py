@@ -149,6 +149,11 @@ def render_md(text: str) -> str:
         if line.startswith("MEDIA_VIDEO:"):
             out.append(c(CYAN, "视频：" + line.split(":", 1)[1].strip()))
             continue
+        if line.startswith("MEDIA_AUDIO:"):
+            url = line.split(":", 1)[1].strip()
+            out.append(c(CYAN, "语音：" + url))
+            out.append(c(DIM, "  手机点这个地址就能播"))
+            continue
         if line.startswith("!["):
             continue  # 上一行已经给出地址
         out.append(line.replace("**", ""))

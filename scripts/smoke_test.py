@@ -168,6 +168,14 @@ status, body = jcall("POST", "/api/schedules", {"name": "坏任务", "cron": "0 
 check("schedule 非法 cron 被拒", status == 400 and "超出范围" in str(body.get("error", "")), str(body)[:200])
 status, body = jcall("POST", "/api/schedules", {"name": "坏任务2", "cron": "* * *", "prompt": "x"})
 check("schedule 段数不对被拒", status == 400 and "5 段" in str(body.get("error", "")), str(body)[:200])
+status, body = jcall("POST", "/api/schedules", {"name": "幽灵", "cron": "0 0 31 2 *", "prompt": "x"})
+check("schedule 日历上不存在的时间被拒", status == 400 and "永远不会触发" in str(body.get("error", "")), str(body)[:200])
+status, body = jcall("POST", "/api/schedules", {"name": "闰日", "cron": "0 0 29 2 *", "prompt": "x"})
+check("schedule 闰日能算出下次", status == 200 and "-02-29" in str(body.get("task", {}).get("next_run")), str(body)[:200])
+if body.get("task", {}).get("id"):
+    jcall("DELETE", f"/api/schedules/{body['task']['id']}")
+status, body = jcall("POST", f"/api/schedules/{task_id}", {"cron": "* * * * *"})
+check("schedule 改 cron 立刻重算", body.get("task", {}).get("human") == "每分钟" and bool(body.get("task", {}).get("next_run")), str(body)[:200])
 status, body = jcall("POST", f"/api/schedules/{task_id}/run", {"wait": True})
 check("schedule run now", body.get("ok") is True and body.get("status") == "ok", str(body)[:300])
 status, body = jcall("GET", "/api/schedules")
@@ -236,6 +244,19 @@ check("upload image", body.get("ok") is True and body.get("url", "").startswith(
 if body.get("url"):
     status, _ = call("GET", body["url"], token=None)
     check("upload served", status == 200)
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{PORT}{body['url']}", headers={"Range": "bytes=0-99"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            rstatus, crange, got = resp.status, resp.headers.get("Content-Range", ""), len(resp.read())
+    except urllib.error.HTTPError as exc:
+        rstatus, crange, got = exc.code, exc.headers.get("Content-Range", ""), 0
+    check(
+        "media 支持 Range（音频/视频拖动进度）",
+        rstatus == 206 and crange.startswith("bytes 0-") and got >= 1,
+        f"{rstatus} {crange} {got} 字节",
+    )
 
 jcall("POST", "/api/files", {"path": "notes.md", "content": "# 标题\n\n- 一\n- 二\n"})
 status, body = jcall("GET", "/api/ui/preview?path=notes.md")

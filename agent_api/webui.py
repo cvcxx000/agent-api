@@ -104,10 +104,47 @@ def mount(router) -> None:
             if not target.is_file():
                 return Response(404, {"ok": False, "error": "文件不存在"})
             content_type = _MIME.get(target.suffix.lower(), "application/octet-stream")
+            size = target.stat().st_size
+            base = {"Cache-Control": "no-cache", "Accept-Ranges": "bytes"}
+            raw_range = (req.header("range") or "").strip()
+            if raw_range.lower().startswith("bytes="):
+                # Range 支持：浏览器放音频/视频要能拖进度、Safari 要见 206 才肯播；
+                # 顺便避免把几十 MB 的视频整个读进内存。
+                spec = raw_range[6:].split(",")[0].strip()
+                left, _, right = spec.partition("-")
+                try:
+                    if left == "":  # bytes=-500：最后 500 字节
+                        start = max(0, size - int(right))
+                        end = size - 1
+                    else:
+                        start = int(left)
+                        end = int(right) if right else size - 1
+                except ValueError:
+                    start, end = 0, -1
+                if size == 0 or start >= size or start > end or end < 0:
+                    return Response(
+                        416, b"",
+                        headers={**base, "Content-Range": f"bytes */{size}"},
+                    )
+                end = min(end, size - 1)
+                with open(target, "rb") as fh:
+                    fh.seek(start)
+                    chunk = fh.read(end - start + 1)
+                return Response(
+                    206, chunk,
+                    headers={**base, "Content-Range": f"bytes {start}-{end}/{size}"},
+                    content_type=content_type,
+                )
+            if size > 8 * 1024 * 1024:
+                return Response(
+                    200, target.read_bytes(),
+                    headers={**base, "Content-Length": str(size)},
+                    content_type=content_type,
+                )
             return Response(
                 200,
                 target.read_bytes(),
-                headers={"Cache-Control": "no-cache"},
+                headers=base,
                 content_type=content_type,
             )
 

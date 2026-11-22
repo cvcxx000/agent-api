@@ -13,6 +13,9 @@
 | `agent_api/ui/chat.js` | SSE 发送与流式渲染、全局事件绑定、初始化 |
 | `agent_api/ui/providers.js` | 提供商列表页、详情、模型增删、测试 |
 | `agent_api/ui/settings.js` | 设置页与各子页 |
+| `agent_api/ui/tts.js` | 设置 → 语音合成（预置 / Key / 模型 / 音色 / 语速 / 格式 + 试朗读） |
+| `agent_api/ui/schedules.js` | 定时任务面板（列表 / 新建 / 跑一次 / 开关 / 删除） |
+| `agent_api/ui/canvas.js` | 画板与文件面板里的图片预览 |
 
 ## 顶栏
 
@@ -23,7 +26,8 @@
 ## 抽屉
 
 - **会话列表**：标题、`session id`、条数、最后时间；点一条切换并回显历史，`✕` 删除（二次确认）。
-- **导出当前会话（Markdown）**：抓整段 messages（含工具输出）下载 `.md`。
+- **导出当前会话（Markdown）**：走后端 `GET /api/sessions/{id}/export`，整段 messages（含工具输出）下载 `.md`。
+- **定时任务**：开面板看全部任务（cron 的人话说法、下次触发时间、上次状态/耗时/次数），可新建、跑一次、暂停、删除。
 - **模型与服务**：`◎ 提供商`（副标题显示「N 家 · M 家启用 · 当前模型」）与 `⚙ 设置`。
 - **功能**：技能 / 工作流 / 子任务 / 文件，各开一个全屏面板。
 - **对话设置**：系统提示词（新建会话时生效）、导出、清空。
@@ -50,6 +54,8 @@ Key 存在 `data/providers.json`（`chmod 600`），重启仍在；接口只返�
 | Web 服务器 | 网页地址、接口地址、监听、鉴权状态、`复制网页地址` |
 | 数据备份 | `下载备份 zip`（`GET /api/backup`：会话 + `providers.json` + 提示词），以及数据 / 沙箱 / 技能 / 工作流目录 |
 | 引擎与限流 | Python / Shell 开关、最大工具轮数、子任务并发、限流（`POST /api/ui/llm` 带 `rate_limit`，立即生效） |
+| 语音合成 | 预置（OpenAI TTS / 硅基流动 CosyVoice / 自定义）、Base URL、Key、模型、音色、语速、格式，点「试朗读」当场播 |
+| 定时任务 | 任务数 + 进入定时任务面板 |
 
 ## 视觉与主题
 
@@ -85,10 +91,27 @@ POST   /api/ui/prompt                     {text:"..."}  空字符串 = 恢复内
 DELETE /api/ui/prompt
 POST   /api/ui/llm                        {base_url,model,api_key,rate_limit,mock}
 GET    /api/backup                        返回 zip
+
+GET    /api/ui/tts                        语音合成配置（不回传明文 key）
+POST   /api/ui/tts                        保存配置 {preset,base_url,api_key,model,voice,format,speed}
+POST   /api/ui/tts/speak                  合成 {text,voice?,speed?,format?} → {url,bytes,...}
+
+GET    /api/schedules                     任务列表（含 human / next_run / last_status）
+POST   /api/schedules                     新建 {name,cron,kind,prompt|workflow,inputs?,enabled?}
+GET    /api/schedules/{id}                单个任务
+POST   /api/schedules/{id}                改名 / 改 cron / 改内容 / {enabled:false}
+DELETE /api/schedules/{id}                删除
+POST   /api/schedules/{id}/run            立刻跑一次（{wait:true} 阻塞到跑完）
+
+GET    /api/sessions/{id}/export          导出 Markdown（含工具输出）
 ```
+
+`/files/media/{name}`、`/files/uploads/{name}` 支持 HTTP Range（`206`），浏览器里的音频/视频可以拖进度。
 
 ## 已知取舍
 
 - 页面刷新不丢会话（`session id` 存 `localStorage`），服务重启后 `data/sessions/*.json` 还在；
 - 浏览器只存 `API_TOKEN`、系统提示词、`session id`，不存模型的 Key；
 - 改 `HOST` / `PORT` / `API_TOKEN` / Python 与 Shell 开关仍要改 `.env` 再重启（页面里只读展示）。
+- 定时任务按**服务器本地时区**触发；Termux 上就是手机时区。
+- 定时任务同时最多跑 2 个（`SCHEDULE_CONCURRENCY`），多的排队；失败原因会写进对应 `[定时]` 会话。

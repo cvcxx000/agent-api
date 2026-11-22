@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import threading
 import time
@@ -30,6 +31,15 @@ logger = logging.getLogger("agent.schedules")
 _TICK_SECONDS = 20
 _RUNNING: dict[str, bool] = {}
 _RUNNING_LOCK = threading.Lock()
+
+# 到点时最多同时跑几个。手机上一个任务跑完可能要好几分钟，同一分钟撞上 5 个
+# 任务会一起打模型、互相抢 CPU；这里限制住，多的排队等。
+_MAX_CONCURRENT = max(1, int(os.environ.get("SCHEDULE_CONCURRENCY", "2")))
+_SLOTS = threading.BoundedSemaphore(_MAX_CONCURRENT)
+
+# 找「下一次」最多往后扫多少天。闰日（2/29）最远要等 4 年，所以给足 8 年；
+# 扫到 8 年还没有，才认定为「永远不会触发」。
+_MAX_SCAN_DAYS = 366 * 8
 
 _MONTH_NAMES = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
@@ -120,6 +130,21 @@ def _num(token: str, lo: int, hi: int, names: dict[str, int] | None) -> int:
     return value
 
 
+def ensure_reachable(expr: str) -> str:
+    """归一 + 校验 + 确认「真的会触发」。
+
+    `0 0 31 2 *`（2 月 31 日）这种语法合法、但日历上永远不存在的 cron，如果放进去
+    只会变成一条永远不跑、也不报错的死任务；这里在创建/修改时就拒掉。
+    """
+    spec = CronSpec(expr)
+    if spec.next_after() is None:
+        raise AppError(
+            f"这个 cron 永远不会触发：{expr} —— 日期在日历上不存在"
+            "（比如 2 月 30/31 日），换个日期或把「日」写成 *"
+        )
+    return spec.expr
+
+
 class CronSpec:
     __slots__ = ("minutes", "hours", "days", "months", "dows", "dom_wild", "dow_wild", "expr")
 
@@ -151,7 +176,7 @@ class CronSpec:
         cursor = after.replace(second=0, microsecond=0) + timedelta(minutes=1)
         hours = sorted(self.hours)
         minutes = sorted(self.minutes)
-        for _ in range(366 * 2):
+        for _ in range(_MAX_SCAN_DAYS):
             if self.day_matches(cursor):
                 same_day = cursor.hour
                 for hour in hours:
@@ -183,6 +208,9 @@ def human(cron: str) -> str:
     if hour.startswith("*/") and dom == "*" and month == "*" and dow == "*":
         return f"每 {hour[2:]} 小时"
     parts: list[str] = []
+    if dom != "*":
+        picked = sorted(spec.days)
+        parts.append("每月 " + "、".join(str(d) for d in picked) + " 号")
     if dow != "*":
         names = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
         seen: list[str] = []
@@ -191,16 +219,13 @@ def human(cron: str) -> str:
             if label not in seen:
                 seen.append(label)
         parts.append("、".join(seen))
-    if dom != "*":
-        picked = sorted(spec.days)
-        parts.append("每月 " + "、".join(str(d) for d in picked) + " 号")
     time_text = ""
     if minute.isdigit() and hour.isdigit():
         time_text = f"{int(hour):02d}:{int(minute):02d}"
     elif hour == "*" and minute.isdigit():
         time_text = f"每小时第 {int(minute)} 分"
     if parts:
-        text = " ".join(parts) + (" " + time_text if time_text else "")
+        text = "、".join(parts) + (" " + time_text if time_text else "")
         if not spec.dom_wild and not spec.dow_wild:
             text += "（日期与星期满足任一）"
         return text
@@ -266,8 +291,8 @@ class ScheduleStore:
 
     def create(self, body: dict[str, Any]) -> dict[str, Any]:
         name = str(body.get("name") or "").strip() or "未命名任务"
-        cron = normalize_cron(body.get("cron"))
-        CronSpec(cron)  # 立刻校验取值合法性（0 25 * * * 这种直接拒）
+        # 归一 + 校验取值范围 + 确认日历上真的存在这个时间点
+        cron = ensure_reachable(normalize_cron(body.get("cron")))
         action = self._normalize_action(body)
         task = {
             "id": new_id("sch"),
@@ -320,8 +345,7 @@ class ScheduleStore:
             if body.get("name") is not None:
                 target["name"] = str(body["name"]).strip()[:60] or target["name"]
             if body.get("cron") is not None:
-                target["cron"] = normalize_cron(body["cron"])
-                CronSpec(target["cron"])
+                target["cron"] = ensure_reachable(normalize_cron(body["cron"]))
             if any(k in body for k in ("kind", "prompt", "workflow", "inputs")):
                 merged = {**target.get("action", {}), **{k: body[k] for k in ("kind", "prompt", "workflow", "inputs") if k in body}}
                 target["action"] = self._normalize_action(merged)
@@ -366,15 +390,17 @@ class ScheduleStore:
             _RUNNING[task_id] = True
         started = time.time()
         status, output, error = "ok", "", ""
-        try:
-            output = self._dispatch(task)
-        except Exception as exc:  # noqa: BLE001
-            status, error = "error", f"{type(exc).__name__}: {exc}"
-            output = error
-            logger.warning("定时任务 %s 失败：%s", task_id, exc)
-        finally:
-            with _RUNNING_LOCK:
-                _RUNNING.pop(task_id, None)
+        # 并发闸门：同一时刻最多 _MAX_CONCURRENT 个任务在跑，多的在这里排队。
+        with _SLOTS:
+            try:
+                output = self._dispatch(task)
+            except Exception as exc:  # noqa: BLE001
+                status, error = "error", f"{type(exc).__name__}: {exc}"
+                output = error
+                logger.warning("定时任务 %s 失败：%s", task_id, exc)
+            finally:
+                with _RUNNING_LOCK:
+                    _RUNNING.pop(task_id, None)
         elapsed = round(time.time() - started, 1)
         with self._lock:
             tasks = self._load()
@@ -417,8 +443,12 @@ class ScheduleStore:
         ctx = ToolContext(session=session, agent_id=f"schedule:{task['id']}", depth=0, allow_spawn=False)
 
         if action.get("kind") == "workflow":
-            result = self.runtime.workflows.run(str(action.get("workflow")), action.get("inputs") or {}, ctx)
-            text = str(result.get("final") or "")
+            try:
+                result = self.runtime.workflows.run(str(action.get("workflow")), action.get("inputs") or {}, ctx)
+                text = str(result.get("final") or "")
+            except Exception as exc:  # noqa: BLE001 - 失败也让会话里有记录
+                self._note_failure(session, task, exc)
+                raise
             session.messages.append({"role": "assistant", "content": f"[定时任务] {task['name']}：{text}"})
             self.runtime.sessions.save(session)
             return text or "（工作流跑完了，但没有最终输出）"
@@ -426,9 +456,23 @@ class ScheduleStore:
         from .agent import Agent
 
         prompt = str(action.get("prompt") or "")
-        result = Agent(self.runtime, session, ctx).run(prompt)
+        try:
+            result = Agent(self.runtime, session, ctx).run(prompt)
+        except Exception as exc:  # noqa: BLE001 - 同上：会话里留一条失败记录
+            self._note_failure(session, task, exc)
+            raise
         self.runtime.sessions.save(session)
         return result.content
+
+    def _note_failure(self, session: Any, task: dict[str, Any], exc: Exception) -> None:
+        try:
+            session.messages.append({
+                "role": "assistant",
+                "content": f"[定时任务] {task['name']} 这次没跑成功：{type(exc).__name__}: {exc}",
+            })
+            self.runtime.sessions.save(session)
+        except Exception:  # noqa: BLE001 - 记录失败本身不能再炸
+            logger.exception("写入失败记录时出错")
 
     # ---------------- 后台循环 ----------------
     def start(self) -> None:
@@ -439,33 +483,47 @@ class ScheduleStore:
         logger.info("定时任务调度器已启动（每 %ss 检查一次）", _TICK_SECONDS)
 
     def _loop(self) -> None:
-        # 启动时给每个任务把 next_run 记下来，避免重启后错过/重复。
-        next_at: dict[str, datetime] = {}
+        # id -> (cron, 下次该跑的时间)。把 cron 一起存着，是因为用户改期之后
+        # 必须立刻按新 cron 重算——否则会傻等旧时间点（界面显示「每分钟」但
+        # 实际要等到明天）。
+        next_at: dict[str, tuple[str, datetime | None]] = {}
         while True:
             try:
                 tasks = self.list()
                 now = datetime.now().replace(second=0, microsecond=0)
+                live = {t["id"] for t in tasks}
+                for tid in list(next_at):
+                    if tid not in live:
+                        next_at.pop(tid, None)
                 for task in tasks:
+                    tid = task["id"]
                     if not task.get("enabled"):
-                        next_at.pop(task["id"], None)
+                        next_at.pop(tid, None)
                         continue
-                    slot = next_at.get(task["id"])
-                    if slot is None:
+                    entry = next_at.get(tid)
+                    if entry is None or entry[0] != task["cron"]:
+                        # 没缓存过，或者 cron 刚被改：重算。允许命中原分钟（不丢这一分钟）。
                         try:
                             slot = CronSpec(task["cron"]).next_after(now - timedelta(minutes=1))
                         except AppError:
-                            continue
-                        next_at[task["id"]] = slot
-                    if slot and slot <= now:
-                        if not _RUNNING.get(task["id"]):
+                            slot = None
+                        entry = (task["cron"], slot)
+                        next_at[tid] = entry
+                    slot = entry[1]
+                    if slot is not None and slot <= now:
+                        # 重启时 next_after(now-1min) 会命中「当前这一分钟」，如果这
+                        # 一分钟其实已经跑过了，就别再补一次。
+                        already = str(task.get("last_run") or "")[:16] == now.strftime("%Y-%m-%d %H:%M")
+                        if not already and not _RUNNING.get(tid):
+                            logger.info("触发定时任务 %s（%s）", tid, task.get("cron"))
                             threading.Thread(
                                 target=self._execute_safe, args=(task,), daemon=True,
-                                name=f"schedule-{task['id']}",
+                                name=f"schedule-{tid}",
                             ).start()
                         try:
-                            next_at[task["id"]] = CronSpec(task["cron"]).next_after(now)
+                            next_at[tid] = (task["cron"], CronSpec(task["cron"]).next_after(now))
                         except AppError:
-                            next_at.pop(task["id"], None)
+                            next_at.pop(tid, None)
             except Exception:  # noqa: BLE001
                 logger.exception("调度循环出错")
             time.sleep(_TICK_SECONDS)
