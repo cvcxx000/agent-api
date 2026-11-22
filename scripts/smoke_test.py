@@ -150,6 +150,38 @@ check("chat stream", status == 200 and "event: end" in raw and "event: final" in
 check("chat stream thinking", "event: reasoning_delta" in raw, raw[:300])
 
 # ---- 提供商：目录 / 空种 / 自定义模型 / 切换 / 清理空壳 ----
+# ---------------- TTS ----------------
+status, body = jcall("GET", "/api/ui/tts")
+check("tts presets", status == 200 and len(body.get("presets") or []) >= 3 and body.get("configured") is False, str(body)[:200])
+status, body = jcall("POST", "/api/ui/tts/speak", {"text": "你好"})
+check("tts 未配置时明确报错", status == 400 and "语音合成" in str(body.get("error", "")), str(body)[:200])
+status, body = jcall("POST", "/api/ui/tts", {"preset": "custom", "base_url": "http://127.0.0.1:1/v1", "model": "m", "voice": "alloy"})
+check("tts 配置保存", status == 200 and body.get("configured") is True and body.get("model") == "m", str(body)[:200])
+status, body = jcall("POST", "/api/ui/tts", {"format": "exe"})
+check("tts 非法格式被拒", status == 400, str(body)[:200])
+
+# ---------------- 定时任务 ----------------
+status, body = jcall("POST", "/api/schedules", {"name": "自检任务", "cron": "0 9 * * *", "prompt": "说一句你好"})
+check("schedule create", status == 200 and body.get("task", {}).get("next_run"), str(body)[:200])
+task_id = (body.get("task") or {}).get("id")
+status, body = jcall("POST", "/api/schedules", {"name": "坏任务", "cron": "0 25 * * *", "prompt": "x"})
+check("schedule 非法 cron 被拒", status == 400 and "超出范围" in str(body.get("error", "")), str(body)[:200])
+status, body = jcall("POST", "/api/schedules", {"name": "坏任务2", "cron": "* * *", "prompt": "x"})
+check("schedule 段数不对被拒", status == 400 and "5 段" in str(body.get("error", "")), str(body)[:200])
+status, body = jcall("POST", f"/api/schedules/{task_id}/run", {"wait": True})
+check("schedule run now", body.get("ok") is True and body.get("status") == "ok", str(body)[:300])
+status, body = jcall("GET", "/api/schedules")
+check("schedule 记录上次结果", any(t["id"] == task_id and t["run_count"] >= 1 and t["last_status"] == "ok" for t in body.get("tasks", [])), str(body)[:300])
+status, body = jcall("POST", f"/api/schedules/{task_id}", {"enabled": False})
+check("schedule 暂停", body.get("task", {}).get("enabled") is False, str(body)[:200])
+status, body = jcall("DELETE", f"/api/schedules/{task_id}")
+check("schedule delete", body.get("ok") is True, str(body)[:200])
+
+# ---------------- 会话导出 ----------------
+status, body = call("GET", f"/api/sessions/{session_id}/export")
+export_text = body if isinstance(body, bytes) else str(body)
+check("export markdown", status == 200 and "# " in str(export_text)[:40], str(export_text)[:120])
+
 status, body = jcall("GET", "/api/providers")
 check("providers start empty", isinstance(body.get("providers"), list) and len(body["providers"]) == 0, str(body)[:300])
 status, body = jcall("GET", "/api/providers/catalog")
@@ -210,7 +242,8 @@ status, body = jcall("GET", "/api/ui/preview?path=notes.md")
 check("preview markdown", body.get("suffix") == ".md" and "标题" in body.get("content", ""), str(body)[:200])
 check("preview blocks escape", jcall("GET", "/api/ui/preview?path=../data/providers.json")[0] == 400)
 
-for asset in ("/ui", "/ui/app.css", "/ui/core.js", "/ui/sessions.js", "/ui/canvas.js", "/ui/chat.js", "/ui/providers.js", "/ui/settings.js"):
+for asset in ("/ui", "/ui/app.css", "/ui/core.js", "/ui/sessions.js", "/ui/canvas.js", "/ui/chat.js",
+               "/ui/providers.js", "/ui/settings.js", "/ui/tts.js", "/ui/schedules.js"):
     status, _ = call("GET", asset, token=None)
     if status != 200:
         check("static " + asset, False, str(status))

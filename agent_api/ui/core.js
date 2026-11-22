@@ -63,6 +63,7 @@ function codeBlock(raw){
 }
 const IMG_RE = /^!\[([^\]]*)\]\(([^)\s]+)\)$/;
 const VID_RE = /^(\/files\/[^\s]+\.(?:mp4|webm|mov))$/i;
+const AUD_RE = /^(\/files\/[^\s]+\.(?:mp3|wav|m4a|ogg|opus|flac|aac))$/i;
 
 function textBlocks(txt){
   const lines = String(txt).split(NL);
@@ -88,6 +89,13 @@ function textBlocks(txt){
       flushPara(); closeList(); closeQuote();
       html += '<div class="md-fig"><a href="' + safeUrl(img[2]) + '" target="_blank" rel="noreferrer noopener">' +
         '<img class="md-img" loading="lazy" alt="' + esc(img[1]) + '" src="' + safeUrl(img[2]) + '"></a></div>';
+      continue;
+    }
+    const aud = t.match(AUD_RE);
+    if (aud){
+      flushPara(); closeList(); closeQuote();
+      html += '<div class="md-fig"><audio class="md-audio" controls preload="metadata" src="' +
+        safeUrl(aud[1]) + '"></audio></div>';
       continue;
     }
     const vid = t.match(VID_RE);
@@ -239,6 +247,7 @@ function fillTool(id, name, output, ok){
   const media = String(text || '');
   const imgMatch = media.match(/MEDIA_IMAGE: (\S+)/);
   const vidMatch = media.match(/MEDIA_VIDEO: (\S+)/);
+  const audMatch = media.match(/MEDIA_AUDIO: (\S+)/);
   const holder = rec.el.querySelector('.mediaHolder') || document.createElement('div');
   holder.className = 'mediaHolder';
   if (imgMatch){
@@ -258,6 +267,15 @@ function fillTool(id, name, output, ok){
     video.preload = 'metadata';
     video.src = vidMatch[1];
     holder.appendChild(video);
+  }
+  if (audMatch && audMatch[1]){
+    holder.innerHTML = '';
+    const audio = document.createElement('audio');
+    audio.className = 'md-audio';
+    audio.controls = true;
+    audio.preload = 'metadata';
+    audio.src = audMatch[1];
+    holder.appendChild(audio);
   }
   if (holder.innerHTML){ rec.el.appendChild(holder); }
   scrollDown();

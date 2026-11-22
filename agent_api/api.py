@@ -417,4 +417,63 @@ def build_router(runtime: Any) -> Router:
     router.add("POST", "/api/subagents/{sub_id}/wait", wait_subagent)
     router.add("POST", "/api/subagents/{sub_id}/cancel", cancel_subagent)
 
+    # ---------------- 定时任务 ----------------
+    def list_schedules(req: Request, params: dict[str, str]) -> Response:
+        tasks = runtime.schedules.list()
+        return json_response({"ok": True, "tasks": tasks, "count": len(tasks)})
+
+    def create_schedule(req: Request, params: dict[str, str]) -> Response:
+        task = runtime.schedules.create(req.json())
+        return json_response({"ok": True, "task": task})
+
+    def get_schedule(req: Request, params: dict[str, str]) -> Response:
+        return json_response({"ok": True, "task": runtime.schedules.get(params["task_id"])})
+
+    def update_schedule(req: Request, params: dict[str, str]) -> Response:
+        body = req.json()
+        if body.get("enabled") is not None and len(body) == 1:
+            task = runtime.schedules.set_enabled(params["task_id"], bool(body["enabled"]))
+            return json_response({"ok": True, "task": task})
+        return json_response({"ok": True, "task": runtime.schedules.update(params["task_id"], body)})
+
+    def delete_schedule(req: Request, params: dict[str, str]) -> Response:
+        return json_response(runtime.schedules.delete(params["task_id"]))
+
+    def run_schedule(req: Request, params: dict[str, str]) -> Response:
+        body = req.json() if req.body else {}
+        wait = bool(body.get("wait"))
+        return json_response(runtime.schedules.run_now(params["task_id"], wait=wait))
+
+    def export_session(req: Request, params: dict[str, str]) -> Response:
+        session = runtime.sessions.get(params["session_id"])
+        lines = [f"# {session.title or '未命名会话'}", "", f"> session_id: `{session.id}`", ""]
+        for message in session.messages:
+            role = str(message.get("role") or "")
+            if role == "system":
+                continue
+            content = message.get("content")
+            if isinstance(content, list):
+                texts = [str(part.get("text") or "") for part in content if isinstance(part, dict)]
+                content = "\n".join(t for t in texts if t)
+            label = {"user": "你", "assistant": "Agent", "tool": "工具"}.get(role, role)
+            lines.append(f"## {label}")
+            lines.append("")
+            lines.append(str(content or "").strip())
+            lines.append("")
+        markdown = "\n".join(lines).strip() + "\n"
+        return Response(
+            200,
+            markdown,
+            headers={"Content-Disposition": f'attachment; filename="{params["session_id"]}.md"'},
+            content_type="text/markdown; charset=utf-8",
+        )
+
+    router.add("GET", "/api/schedules", list_schedules)
+    router.add("POST", "/api/schedules", create_schedule)
+    router.add("GET", "/api/schedules/{task_id}", get_schedule)
+    router.add("POST", "/api/schedules/{task_id}", update_schedule)
+    router.add("DELETE", "/api/schedules/{task_id}", delete_schedule)
+    router.add("POST", "/api/schedules/{task_id}/run", run_schedule)
+    router.add("GET", "/api/sessions/{session_id}/export", export_session)
+
     return router

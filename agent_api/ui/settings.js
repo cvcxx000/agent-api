@@ -36,6 +36,15 @@ async function showSettings(){
         ? (media.video.model + (media.video.has_key ? ' · 有 Key' : ' · 没 Key'))
         : '未配置 · 生成视频用不了',
       () => pushSheet('media-video', '视频生成', '异步任务 + 轮询', () => showMedia('video'))));
+    const tts = s.tts || {};
+    w.appendChild(settingRow('♪', '语音合成',
+      tts.configured
+        ? ((tts.name || tts.preset || 'TTS') + ' · ' + (tts.voice || '默认音色') + (tts.has_key ? '' : ' · 没 Key'))
+        : '未配置 · 说不了话',
+      () => pushSheet('tts', '语音合成', 'TTS · /audio/speech', () => showTts())));
+    w.appendChild(settingRow('◷', '定时任务',
+      (s.schedules ? (s.schedules + ' 个任务在跑') : '还没有任务') + ' · cron 到点自动跑',
+      () => pushSheet('schedules', '定时任务', 'cron 到点自动跑', () => showSchedules())));
     w.appendChild(settingRow('▤', 'Web 服务器',
       s.host + ':' + s.port + ' · ' + (s.auth_enabled ? '已开鉴权' : '无鉴权'),
       () => pushSheet('server', 'Web 服务器', '监听地址', () => showServer())));

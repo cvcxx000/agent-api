@@ -13,6 +13,7 @@ def mount(router) -> None:
     from pathlib import Path
 
     from . import media as media_store
+    from . import tts as tts_store
     from . import providers as provider_store
     from . import search as search_store
     from .errors import AppError, NotFoundError
@@ -311,6 +312,8 @@ def mount(router) -> None:
                 "prompt_chars": len(runtime.default_system_prompt or ""),
                 "media": media_store.public(st),
                 "search": search_store.public(st),
+                "tts": tts_store.public(st),
+                "schedules": len(runtime.schedules.list()) if runtime.schedules else 0,
             },
         )
 
@@ -387,6 +390,29 @@ def mount(router) -> None:
     router.add("GET", "/api/ui/prompt", ui_prompt_get, auth=True)
     router.add("POST", "/api/ui/prompt", ui_prompt_set, auth=True)
     router.add("DELETE", "/api/ui/prompt", ui_prompt_reset, auth=True)
+    # ---------------- 语音合成（TTS） ----------------
+    def ui_tts(req, params):
+        return Response(200, tts_store.public(req.runtime.settings))
+
+    def ui_tts_set(req, params):
+        body = req.json()
+        return Response(200, tts_store.configure(req.runtime.settings, body))
+
+    def ui_tts_speak(req, params):
+        body = req.json()
+        result = tts_store.speak(
+            req.runtime.settings,
+            str(body.get("text") or ""),
+            voice=str(body.get("voice") or ""),
+            speed=body.get("speed"),
+            fmt=str(body.get("format") or ""),
+        )
+        return Response(200, {"ok": True, **result})
+
+    router.add("GET", "/api/ui/tts", ui_tts, auth=True)
+    router.add("POST", "/api/ui/tts", ui_tts_set, auth=True)
+    router.add("POST", "/api/ui/tts/speak", ui_tts_speak, auth=True)
+
     router.add("GET", "/api/ui/media", ui_media, auth=True)
     router.add("POST", "/api/ui/media/{kind}", ui_media_set, auth=True)
     router.add("POST", "/api/ui/media/{kind}/generate", ui_media_generate, auth=True)

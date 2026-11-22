@@ -19,6 +19,8 @@ _CONTENT_TYPES = {
     "providers.js": "application/javascript; charset=utf-8",
     "settings.js": "application/javascript; charset=utf-8",
     "canvas.js": "application/javascript; charset=utf-8",
+    "tts.js": "application/javascript; charset=utf-8",
+    "schedules.js": "application/javascript; charset=utf-8",
 }
 
 _MIME = {
@@ -30,6 +32,16 @@ _MIME = {
     ".mp4": "video/mp4",
     ".webm": "video/webm",
     ".mov": "video/quicktime",
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".wav": "audio/wav",
+    ".ogg": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".flac": "audio/flac",
+    ".aac": "audio/aac",
+    ".md": "text/markdown; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".csv": "text/csv; charset=utf-8",
 }
 
 
@@ -69,6 +81,8 @@ def mount(router) -> None:
     router.add("GET", "/ui/chat.js", make("chat.js"), auth=False)
     router.add("GET", "/ui/providers.js", make("providers.js"), auth=False)
     router.add("GET", "/ui/settings.js", make("settings.js"), auth=False)
+    router.add("GET", "/ui/tts.js", make("tts.js"), auth=False)
+    router.add("GET", "/ui/schedules.js", make("schedules.js"), auth=False)
     router.add("GET", "/ui/canvas.js", make("canvas.js"), auth=False)
 
     def media_file(subdir: str):

@@ -74,6 +74,13 @@ def get_bytes(url: str, headers: dict[str, str] | None = None, timeout: float = 
         return resp.read(), (resp.headers.get("Content-Type") or "")
 
 
+def post_raw(url: str, payload: Any, headers: dict[str, str] | None = None,
+             timeout: float = 120.0) -> tuple[bytes, str]:
+    """POST 后直接收二进制（TTS 这类接口回的是音频而不是 JSON）。"""
+    with _open("POST", url, payload, headers, timeout) as resp:
+        return resp.read(), (resp.headers.get("Content-Type") or "")
+
+
 def bearer(key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {key}"} if key else {}
 

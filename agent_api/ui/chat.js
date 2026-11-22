@@ -248,6 +248,7 @@ $('goSkills').addEventListener('click', () => { openDrawer(false); pushSheet('sk
 $('goWorkflows').addEventListener('click', () => { openDrawer(false); pushSheet('workflows', '工作流', 'JSON 步骤', () => showWorkflows()); });
 $('goSubagents').addEventListener('click', () => { openDrawer(false); pushSheet('subagents', '子任务', '最多 3 个并行', null); });
 $('goFiles').addEventListener('click', () => { openDrawer(false); pushSheet('files', '文件', '浏览 / 预览 MD', () => showFiles()); });
+$('goSchedules').addEventListener('click', () => { openDrawer(false); pushSheet('schedules', '定时任务', 'cron 到点自动跑', () => showSchedules()); });
 $('goProviders').addEventListener('click', () => { openDrawer(false); pushSheet('providers', '提供商', '目录 / 拉模型 / 切换', () => showProviders()); });
 $('goSettings').addEventListener('click', () => { openDrawer(false); pushSheet('settings', '设置', '模型 · 搜索 · 图片 · 视频', () => showSettings()); });
 $('btnHeaderSettings').addEventListener('click', () => { openDrawer(false); pushSheet('settings', '设置', '模型 · 搜索 · 图片 · 视频', () => showSettings()); });

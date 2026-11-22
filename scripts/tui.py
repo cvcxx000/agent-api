@@ -17,6 +17,8 @@
     /md 路径          把 workspace 里的 Markdown 渲染到终端
     /file 路径        看纯文本
     /see 图片路径     把本地图片发给模型看图（下一句自动带上）
+    /say 文字         合成语音（TTS），给出可播放的音频地址
+    /cron            看定时任务，输编号立刻跑一次；/cron off|on 编号 开关
     /sessions        列出会话，输编号切换
     /quit            退出
 其余输入都会作为一句话发给 Agent，思考/正文/工具调用都是流式打印。
@@ -85,6 +87,19 @@ class Api:
             raise SystemExit(f"连不上 {self.base}：{exc.reason}") from exc
         except Exception as exc:  # noqa: BLE001  URL 里出现编码不了的字符等
             raise SystemExit(f"请求失败（{path}）：{exc}") from exc
+
+    def delete(self, path: str) -> dict:
+        req = urllib.request.Request(self.base + enc_path(path), method="DELETE", headers=self.headers())
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return json.loads(resp.read().decode("utf-8") or "{}")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:400]
+            raise RuntimeError(f"HTTP {exc.code}：{detail}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"连不上 {self.base}：{exc.reason}") from exc
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"请求失败（{path}）：{exc}") from exc
 
     def post(self, path: str, body: dict) -> dict:
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -389,6 +404,8 @@ COMMANDS = [
     ("/md", "渲染 Markdown：/md 笔记.md"),
     ("/file", "看文本：/file 路径"),
     ("/see", "发图给模型：/see 图片路径"),
+    ("/say", "合成语音：/say 你好"),
+    ("/cron", "定时任务：/cron 看列表，输编号跑一次"),
     ("/new", "开新会话"),
     ("/sessions", "列出会话并切换"),
     ("/session", "看当前会话 id"),
@@ -467,6 +484,96 @@ def cmd_load_skill(api, state, name):
         print(c(RED, "载入技能失败：" + str(exc)))
         return
     print(c(GREEN, "已载入技能 " + name))
+
+
+def cmd_say(api, text):
+    if not text:
+        print(c(RED, "用法：/say 要说的话"))
+        return
+    try:
+        result = api.post("/api/ui/tts/speak", {"text": text})
+    except (RuntimeError, SystemExit) as exc:
+        print(c(RED, "合成失败：" + str(exc)))
+        return
+    print(c(GREEN, "已合成 " + str(result.get("bytes")) + " 字节 · 音色 " + str(result.get("voice") or "默认")))
+    print(c(DIM, "文件：" + str(result.get("path"))))
+    print(c(CYAN, api.base + str(result.get("url"))))
+    print(c(DIM, "手机点上面这个地址就能播；或 mpv / ffplay 那个文件"))
+
+
+def _cron_tasks(api):
+    data = api.get("/api/schedules")
+    return data.get("tasks") or []
+
+
+def cmd_cron(api, state, arg):
+    arg = (arg or "").strip()
+    try:
+        tasks = _cron_tasks(api)
+    except (RuntimeError, SystemExit) as exc:
+        print(c(RED, str(exc)))
+        return
+    if arg.startswith(("off ", "on ")):
+        word, _, idx = arg.partition(" ")
+        picked = _pick(tasks, idx)
+        if picked is None:
+            print(c(RED, "编号不对，先 /cron 看列表"))
+            return
+        try:
+            api.post("/api/schedules/" + picked["id"], {"enabled": word == "on"})
+        except (RuntimeError, SystemExit) as exc:
+            print(c(RED, str(exc)))
+            return
+        print(c(GREEN, ("已启用 " if word == "on" else "已暂停 ") + picked["name"]))
+        return
+    if arg.startswith("del "):
+        picked = _pick(tasks, arg[4:])
+        if picked is None:
+            print(c(RED, "编号不对"))
+            return
+        try:
+            api.delete("/api/schedules/" + picked["id"])
+        except (RuntimeError, SystemExit) as exc:
+            print(c(RED, str(exc)))
+            return
+        print(c(GREEN, "已删除 " + picked["name"]))
+        return
+    if not tasks:
+        print(c(DIM, "还没有定时任务：网页「定时任务」里建，或直接跟 Agent 说「每天 9 点帮我…」"))
+        return
+    for i, t in enumerate(tasks, 1):
+        flag = "" if t.get("enabled") else c(DIM, "（暂停）")
+        last = t.get("last_status") or "未跑过"
+        print(f" {c(DIM, f'[{i}]')} {c(BOLD, t['name'])}{flag}  {c(CYAN, t.get('human') or '')}" +
+              c(DIM, f"  下次 {t.get('next_run') or '—'} · 上次 {last}"))
+        action = t.get("action") or {}
+        what = action.get("prompt") or ("工作流 " + str(action.get("workflow")))
+        print(c(DIM, "     " + str(what)[:90]))
+    raw = input(c(CYAN, "输编号立刻跑一次（回车跳过）：")).strip()
+    if raw and raw.isdigit():
+        picked = _pick(tasks, raw)
+        if picked:
+            print(c(DIM, "跑中…"))
+            try:
+                res = api.post("/api/schedules/" + picked["id"] + "/run", {"wait": True})
+            except (RuntimeError, SystemExit) as exc:
+                print(c(RED, str(exc)))
+                return
+            if res.get("ok"):
+                print(c(GREEN, "完成 · " + str(res.get("seconds")) + "s"))
+                print(wrap(str(res.get("output") or "")))
+            else:
+                print(c(RED, "失败：" + str(res.get("error") or res.get("message") or "")))
+
+
+def _pick(tasks, raw):
+    raw = str(raw or "").strip()
+    if not raw.isdigit():
+        return None
+    index = int(raw)
+    if 1 <= index <= len(tasks):
+        return tasks[index - 1]
+    return None
 
 
 def cmd_sessions(api, state):
@@ -626,6 +733,18 @@ def main() -> None:
             continue
         if line.startswith("/see "):
             cmd_see(api, state, line[len("/see "):].strip())
+            continue
+        if line == "/say":
+            print(c(RED, "用法：/say 要说的话"))
+            continue
+        if line.startswith("/say "):
+            cmd_say(api, line[len("/say "):].strip())
+            continue
+        if line == "/cron":
+            cmd_cron(api, state, "")
+            continue
+        if line.startswith("/cron "):
+            cmd_cron(api, state, line[len("/cron "):].strip())
             continue
         stream_chat(api, line, [], state)
 

@@ -16,6 +16,8 @@
 | 视频能不能抽帧？ | `video_probe`（读时长/分辨率/帧率/编码）、`video_frames`（按数量或时间点抽帧，产物能当附件喂给模型看）、`video_audio`（导音轨成 mp3/wav/m4a） |
 | 删东西有高危授权吗？ | 有闸门 `guard`：静态规则 + 破坏面估算 + 受保护目录，命中就拒绝执行，回一句「为什么危险」，你明确同意后模型带 `confirm=true` 才会真跑 |
 | 能自己长能力吗？ | 有插件系统，10 个工具（`plugin_create` / `validate` / `enable` / `update` / `reload` / `disable` / `delete` / `list` / `read`），Agent 自己写 `.py` 进去就能多出工具 |
+| 能不能出声？ | 有 TTS：`speak_text` 工具 + 网页「语音合成」+ 终端 `/say`，产物是能直接播的音频 |
+| 能不能自己按时干活？ | 有定时任务：cron 表达式到点自动跑一句话或一个工作流，网页/终端/Agent 三处都能建 |
 | 会话都是「无标题」？ | 首轮对话后按首句自动起标题（`_guess_title`），不再是清一色无标题 |
 
 ---
@@ -82,6 +84,8 @@ python3 scripts/tui.py --base http://127.0.0.1:8000 --token 你的TOKEN
 | 命令 | 作用 |
 | --- | --- |
 | `/model` | 列真实模型挑编号，立即切换 |
+| `/say 文字` | 合成语音（TTS），给出可播放的音频地址 |
+| `/cron` | 列出定时任务，输编号立刻跑一次；`/cron on|off 编号` 开关，`/cron del 编号` 删除 |
 | `/sessions` | 列出所有会话（带 id 和标题），可以挑一个继续 |
 | `/session` | 看当前会话 id 与标题 |
 | `/new` | 开新会话 |
@@ -190,6 +194,53 @@ view_image("uploads/pic.png")   # 或 /see uploads/pic.png 在终端里
 
 ---
 
+## 语音合成（TTS）
+
+零依赖直接调 OpenAI 兼容的 `POST /audio/speech`，回来的是音频字节，落到 `workspace/media/`，网页 `<audio>` 直接播。
+
+三处入口：
+
+- **网页**：设置 → 语音合成，选预置 → 填 Key/模型/音色 → 保存 → 「试朗读」
+- **终端**：`/say 你好，我是你的 Agent`
+- **Agent**：`speak_text(text, voice?, speed?, format?)`，返回 `MEDIA_AUDIO: /files/media/xxx.mp3`，网页聊天里自动出现播放器
+
+预置三家：OpenAI TTS（`gpt-4o-mini-tts`，音色 alloy/echo/fable/onyx/nova/shimmer）、硅基流动 CosyVoice、自定义（任何实现 `/audio/speech` 的中转站）。
+
+细节上都做了防呆：没配置时直接说「设置 → 语音合成」而不是报 500；一次最多 4096 字；返回 JSON 而不是音频时（中转站出错也回 200 的常见坑）会当成错误抛出来，不会把错误信息存成一个「音频文件」。
+
+## 定时任务
+
+到点自动跑，不用你记着催。任务存 `data/schedules.json`，调度线程每 20 秒检查一次。
+
+**cron 写法**：5 段（分 时 日 月 周），支持 `*`、`*/n`、`a-b`、`a-b/n`、逗号列表、月份/星期英文缩写，外加 `@hourly` `@daily` `@weekly` `@monthly` `@every 10m` `@every 2h`。
+
+```
+0 9 * * *        每天 09:00
+*/15 * * * *     每 15 分钟
+30 8 * * 1-5     工作日 08:30
+0 9 1 * *        每月 1 号 09:00
+@every 2h        每 2 小时
+```
+
+**两种动作**：
+
+- `kind=chat`：到点把 `prompt` 当成一句话发给 Agent（能调工具、能读写文件）
+- `kind=workflow`：到点跑 `workflows/` 里的某个工作流，带 `inputs`
+
+**行为约定**：
+
+- 每个任务有自己的会话 `[定时] 名字`，跑完的对话都在里面，能翻历史
+- 同一个任务不会叠着跑：上一次没结束，这一次跳过
+- 上次运行时间、状态、错误、耗时、跑过多少次都记在 `data/schedules.json`，网页和 `/cron` 都能看到
+- 日 和 周 都限定的时候按 Vixie cron 老规矩：**任一命中即可**（`0 9 1 * 1` 是「每月 1 号或每周一」）
+- 非法 cron 在创建时就拒：`0 25 * * *` → 「cron 取值 25 超出范围 0-23」
+
+**三处入口**：网页抽屉「定时任务」、终端 `/cron`、以及直接跟 Agent 说「每天早上 9 点帮我读一下日报」——它会调 `schedule_create`。
+
+## 会话导出
+
+`GET /api/sessions/{id}/export` 直接把一个会话导成 Markdown（带每个角色的分段、工具输出），网页抽屉里也有「导出当前会话」。
+
 ## 高危命令闸门（`guard`）
 
 三道关，任一中招就拒绝执行：
@@ -250,7 +301,7 @@ Agent 侧的工具：`plugin_list` `plugin_create` `plugin_update` `plugin_read`
 
 ---
 
-## 内置工具（45 个）
+## 内置工具（51 个）
 
 | 类别 | 工具 |
 | --- | --- |
@@ -258,7 +309,8 @@ Agent 侧的工具：`plugin_list` `plugin_create` `plugin_update` `plugin_read`
 | 执行 | `run_python` `run_shell`（都过闸门） |
 | Cookie | `get_cookie` `set_cookie` `delete_cookie` `get_cookie_header` `import_cookie_from_storage_state` `import_cookie_from_browser` |
 | 联网 | `web_search` `fetch_url` |
-| 媒体 | `generate_image` `generate_video` `view_image` `video_probe` `video_frames` `video_audio` |
+| 媒体 | `generate_image` `generate_video` `view_image` `video_probe` `video_frames` `video_audio` `speak_text` |
+| 定时 | `schedule_list` `schedule_create` `schedule_update` `schedule_delete` `schedule_run` |
 | Skill | `list_skills` `read_skill` `load_skill` |
 | 插件 | 上面那 9 个 |
 | 子任务 | `spawn_agent` `wait_agent` `list_agents` `cancel_agent` |
@@ -293,6 +345,13 @@ Agent 侧的工具：`plugin_list` `plugin_create` `plugin_update` `plugin_read`
 | GET / POST | `/api/ui/settings`、`/api/ui/llm`、`/api/ui/prompt` | 设置摘要 / 运行时覆盖 / 默认提示词 |
 | GET / POST | `/api/ui/search` | 搜索服务配置（Tavily / 博查 / Serper / DDG / 自定义） |
 | POST | `/api/ui/search/test` | 试搜一条（网页和 TUI 共用） |
+| GET / POST | `/api/ui/tts` | 语音合成配置（预置 / Key / 模型 / 音色 / 语速 / 格式） |
+| POST | `/api/ui/tts/speak` | 合成一段语音，产物落 `workspace/media/` |
+| GET / POST | `/api/schedules` | 定时任务列表 / 新建 |
+| GET / DELETE | `/api/schedules/{id}` | 单个任务详情 / 删除 |
+| POST | `/api/schedules/{id}` | 改名字、cron、内容，或 `{"enabled": false}` 暂停 |
+| POST | `/api/schedules/{id}/run` | 立刻跑一次（`{"wait": true}` 阻塞到跑完） |
+| GET | `/api/sessions/{id}/export` | 导出该会话为 Markdown |
 | GET / POST | `/api/ui/media`、`/api/ui/media/{kind}` | 图片/视频生成配置（`kind=image\|video`） |
 | POST | `/api/ui/media/{kind}/generate` | 手动试生成，产物落 `workspace/media/` |
 | POST | `/api/ui/upload` | 附件上传（base64 data_url，≤8MB） |
@@ -437,6 +496,8 @@ agent-api/
 │  ├─ plugins.py              # 插件加载 / 校验 / 热重载
 │  ├─ presets.py              # LLM / 图片 / 视频 / 搜索模板
 │  ├─ media.py                # 图片与视频生成（三种轮询形状）
+│  ├─ tts.py                  # 语音合成（/audio/speech，二进制直收）
+│  ├─ schedules.py            # 定时任务：cron 解析 + 调度线程 + 执行
 │  ├─ search.py               # 五种搜索实现
 │  ├─ net.py                  # urllib 封装 + 真实错误回传
 │  ├─ sessions.py             # 会话落盘 + 自动标题 + 子 Agent 调度
