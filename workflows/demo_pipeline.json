@@ -1,0 +1,28 @@
+{
+  "name": "demo_pipeline",
+  "description": "生成一个样例文本文件 → 用 Python 统计 → 用 Agent 步骤写结论。演示 tool / python / agent 三种步骤。",
+  "inputs": {
+    "path": {
+      "description": "要统计的文件（沙箱内相对路径）",
+      "default": "outputs/demo.txt"
+    }
+  },
+  "steps": [
+    {
+      "id": "seed",
+      "tool": "write_file",
+      "args": {
+        "path": "{{ inputs.path }}",
+        "content": "第一行：苹果\n第二行：香蕉\n第三行：苹果\n"
+      }
+    },
+    {
+      "id": "stats",
+      "python": "from pathlib import Path\np = Path(\"{{ inputs.path }}\")\ntext = p.read_text(encoding=\"utf-8\")\nlines = [line for line in text.splitlines() if line.strip()]\nprint(f\"lines={len(lines)} chars={len(text)}\")\nprint(f\"first={lines[0] if lines else ''}\")\n"
+    },
+    {
+      "id": "summary",
+      "agent": "根据下面这段统计输出，用两句话总结这个文件的内容特点，不要编造数字：\n{{ steps.stats.output }}"
+    }
+  ]
+}
