@@ -1,8 +1,8 @@
-"""给模型用的插件管理工具：列出 / 新建 / 改 / 开关 / 重载 / 删除。
+"""给模型用的插件管理工具：列出 / 验证 / 新建 / 改 / 开关 / 重载 / 删除。
 
 设计意图（「万物皆插件」）：模型遇到自己没有的能力时，可以自己写个插件装上，
 下次同类任务直接调工具，而不是每次都现写临时脚本。写代码不算数，
-**启用才算**——启用要用户点头（confirm=true）。
+**验证 → 启用**才算，启用要用户点头（confirm=true）。
 """
 
 from __future__ import annotations
@@ -16,7 +16,12 @@ GetManager = Callable[[], Any]
 
 _SCAFFOLD = '''"""插件：{name} —— {description}"""
 
-PLUGIN = {{"name": "{name}", "description": "{description}"}}
+PLUGIN = {{
+    "name": "{name}",
+    "description": "{description}",
+    "version": "0.1",
+    "tags": [],
+}}
 
 
 def {func}(ctx, args):
@@ -52,6 +57,10 @@ def _tools_line(manager: Any) -> str:
         flag = "启用" if item.get("enabled") else "停用"
         tools = ", ".join(item.get("tools") or []) or "-"
         line = f"· {item['name']}  [{flag}]  工具：{tools}"
+        if item.get("version"):
+            line += f"  v{item['version']}"
+        if item.get("tags"):
+            line += f"  #{'/'.join(item['tags'])}"
         if item.get("description"):
             line += f"  — {item['description']}"
         if item.get("error"):
@@ -78,7 +87,7 @@ def register(registry: ToolRegistry, get_manager: GetManager) -> None:
         return (
             f"插件已创建：{result['path']}\n"
             f"还**没启用**（新建插件一律先停着，因为它会执行任意代码）。\n"
-            f"要用它：先跟用户确认，再调 plugin_enable（name=\"{result['name']}\", confirm=true）。"
+            f"建议先 plugin_validate 验一遍，再跟用户确认，然后 plugin_enable（name=\"{result['name']}\", confirm=true）。"
         )
 
     def plugin_update(ctx: ToolContext, args: dict[str, Any]) -> str:
@@ -94,6 +103,29 @@ def register(registry: ToolRegistry, get_manager: GetManager) -> None:
         if len(code) > 4000:
             code = code[:4000] + "\n…（后面省略，改的时候整段覆盖）"
         return f"{data['path']}\n\n```python\n{code}\n```"
+
+    def plugin_validate(ctx: ToolContext, args: dict[str, Any]) -> str:
+        manager = get_manager()
+        result = manager.validate(str(args.get("name") or ""), str(args.get("code") or ""))
+        if not result.get("ok"):
+            return f"验证失败（{result.get('stage')}）：{result.get('error')}"
+        tools = result.get("tools") or []
+        lines = [f"验证通过：会注册 {len(tools)} 个工具 —— " + ", ".join(tools)]
+        desc = result.get("descriptions") or {}
+        for one in tools:
+            text = str(desc.get(one) or "")
+            if text:
+                lines.append(f"· {one}：{text[:80]}")
+        meta = result.get("meta") or {}
+        extra = []
+        if meta.get("version"):
+            extra.append(f"version={meta['version']}")
+        if meta.get("tags"):
+            extra.append("tags=" + ",".join(str(t) for t in meta["tags"]))
+        if extra:
+            lines.append("元信息：" + " ".join(extra))
+        lines.append("验证 ≠ 启用：确认没问题再 plugin_enable(confirm=true)。")
+        return "\n".join(lines)
 
     def plugin_enable(ctx: ToolContext, args: dict[str, Any]) -> str:
         manager = get_manager()
@@ -139,7 +171,7 @@ def register(registry: ToolRegistry, get_manager: GetManager) -> None:
 
     registry.register(
         "plugin_list",
-        "列出所有插件（名字、是否启用、注册了哪些工具、装载错误）。想知道「有没有现成能力」先看这个。",
+        "列出所有插件（名字、版本、标签、是否启用、注册了哪些工具、装载错误）。想知道「有没有现成能力」先看这个。",
         {"type": "object", "properties": {}},
         plugin_list,
     )
@@ -176,6 +208,19 @@ def register(registry: ToolRegistry, get_manager: GetManager) -> None:
         "看某个插件的源码，改之前先读。",
         {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
         plugin_read,
+    )
+    registry.register(
+        "plugin_validate",
+        "干跑检查插件（只 import + register，不启用、不写状态）：语法/导入/注册错误、会注册哪些工具。"
+        "写完代码先跑这个，别直接启用。",
+        {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "已有插件名；或者给 code 时只当标签"},
+                "code": {"type": "string", "description": "还没落盘的代码，先验证再创建"},
+            },
+        },
+        plugin_validate,
     )
     registry.register(
         "plugin_enable",
