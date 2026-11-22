@@ -33,7 +33,9 @@
     <button id="goSkills"><b>技能</b><span>载入 SKILL.md</span></button>
     <button id="goWorkflows"><b>工作流</b><span>跑 JSON 流程</span></button>
     <button id="goSubagents"><b>子任务</b><span>最多 3 个并行</span></button>
-    <button id="goFiles"><b>文件</b><span>浏览与预览</span></button>
+    <button id="goFiles"><b>文件</b><span>浏览 / 预览 MD</span></button>
+    <button id="goCanvas"><b>画板</b><span>手绘草图发给我</span></button>
+    <button id="goTerminal"><b>终端版</b><span>python3 scripts/tui.py</span></button>
   </div>
 
   <div class="dr-sep"></div>
@@ -46,7 +48,7 @@
     </button>
     <button class="row" id="goSettings">
       <span class="rico">⚙</span>
-      <span class="rbody"><b>设置</b><i>默认模型与提示词 · 备份 · 限流</i></span>
+      <span class="rbody"><b>设置</b><i>模型 · 搜索 · 图片 · 视频 · 备份</i></span>
       <span class="rgo">›</span>
     </button>
   </div>
@@ -78,17 +80,46 @@
   <main id="sheetBody"><div class="wrap" id="sheetWrap"></div></main>
 </section>
 
+<section id="board" class="board">
+  <header>
+    <button class="icon" id="boardBack" aria-label="关闭">‹</button>
+    <div class="title">画板<small>手绘一张，发给我看</small></div>
+    <button class="pill" id="boardSend">发送</button>
+  </header>
+  <div class="board-tools">
+    <span class="brush-dots">
+      <button class="swatch on" data-color="#111827" style="background:#111827"></button>
+      <button class="swatch" data-color="#0a84ff" style="background:#0a84ff"></button>
+      <button class="swatch" data-color="#e5342a" style="background:#e5342a"></button>
+      <button class="swatch" data-color="#12984a" style="background:#12984a"></button>
+      <button class="swatch" data-color="#c47b00" style="background:#c47b00"></button>
+    </span>
+    <input id="brushSize" type="range" min="1" max="18" value="4" title="笔粗">
+    <button class="mini2" id="boardUndo">撤销</button>
+    <button class="mini2" id="boardClear">清空</button>
+  </div>
+  <div class="board-stage"><canvas id="boardCanvas"></canvas></div>
+  <div class="board-tip">手指或鼠标直接画；发送后会自动附到下一句话里。</div>
+</section>
+
 <main id="log"><div class="wrap" id="wrap"></div></main>
 
 <footer>
+  <div class="attachRow" id="attachRow"></div>
   <div class="composer">
+    <button class="comp-btn" id="btnCanvas" aria-label="画板" title="画板">✎</button>
     <textarea id="input" rows="1" placeholder="让 Agent 干活…"></textarea>
     <button id="send" title="发送">↑</button>
   </div>
-  <div class="hint"><span id="sid">session: -</span><span id="tip">Enter 发送</span></div>
+  <div class="hint">
+    <button class="modelChip" id="modelChip">未配置模型</button>
+    <span id="sid">session: -</span>
+    <span id="tip">Enter 发送</span>
+  </div>
 </footer>
 <script src="/ui/core.js"></script>
 <script src="/ui/sessions.js"></script>
+<script src="/ui/canvas.js"></script>
 <script src="/ui/chat.js"></script>
 <script src="/ui/providers.js"></script>
 <script src="/ui/settings.js"></script>
