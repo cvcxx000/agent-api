@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#faf9f5">
+<title>Agent</title>
+<link rel="stylesheet" href="/ui/app.css">
+
+</head>
+<body>
+<header>
+  <button class="icon" id="btnMenu" aria-label="菜单">☰</button>
+  <div class="title">Agent<small id="status">连接中…</small></div>
+  <button class="badge" id="badge">子任务 0/3</button>
+  <button class="pill" id="btnHeaderSettings">设置</button>
+  <button class="pill" id="btnNew">新会话</button>
+</header>
+
+<div id="mask"></div>
+
+<aside id="drawer">
+  <div class="dr-head"><span>会话列表</span><span id="drCount"></span></div>
+  <div id="sessList"></div>
+  <div class="dr-sep"></div>
+
+  <div class="dr-head"><span>功能</span></div>
+  <div class="grid">
+    <button id="goSkills"><b>技能</b><span>载入 SKILL.md</span></button>
+    <button id="goWorkflows"><b>工作流</b><span>跑 JSON 流程</span></button>
+    <button id="goSubagents"><b>子任务</b><span>最多 3 个并行</span></button>
+    <button id="goFiles"><b>文件</b><span>浏览与预览</span></button>
+  </div>
+
+  <div class="dr-sep"></div>
+  <div class="dr-head"><span>模型与服务</span></div>
+  <div class="rows">
+    <button class="row" id="goProviders">
+      <span class="rico">◎</span>
+      <span class="rbody"><b>提供商</b><i id="providerSub">读取中…</i></span>
+      <span class="rgo">›</span>
+    </button>
+    <button class="row" id="goSettings">
+      <span class="rico">⚙</span>
+      <span class="rbody"><b>设置</b><i>默认模型与提示词 · 备份 · 限流</i></span>
+      <span class="rgo">›</span>
+    </button>
+  </div>
+  <div class="dr-label">当前：<span id="curModel">读取中…</span></div>
+
+  <div class="dr-sep"></div>
+  <div class="dr-head"><span>对话设置</span></div>
+  <div class="dr-label">API_TOKEN（服务端没设就留空）</div>
+  <input id="inpToken" autocomplete="off" placeholder="X-API-Token">
+  <div class="dr-label">系统提示词（新建会话时生效）</div>
+  <textarea id="inpSystem" placeholder="例如：只用中文回答，结论先行"></textarea>
+  <div class="dr-label">单轮最大工具轮数</div>
+  <input id="inpTurns" placeholder="留空 = 服务端默认">
+  <button class="act primary" id="btnSave">保存设置</button>
+
+  <div class="dr-sep"></div>
+  <button class="act" id="btnExport">导出当前会话（Markdown）</button>
+  <button class="act" id="btnClearView">清空当前画面</button>
+  <div class="dr-tip">会话存在服务端 data/sessions；浏览器只记 session id、token 和设置。模型切换会重建客户端，不写入 .env，重启后回到 .env 的配置。</div>
+</aside>
+
+<section id="sheet">
+  <header>
+    <button class="icon" id="sheetBack" aria-label="返回">←</button>
+    <div class="title" id="sheetTitle">面板<small id="sheetSub"></small></div>
+    <button class="pill" id="sheetRefresh">刷新</button>
+  </header>
+  <main id="sheetBody"><div class="wrap" id="sheetWrap"></div></main>
+</section>
+
+<main id="log"><div class="wrap" id="wrap"></div></main>
+
+<footer>
+  <div class="composer">
+    <textarea id="input" rows="1" placeholder="让 Agent 干活…（Enter 发送，Shift+Enter 换行）"></textarea>
+    <button id="send" title="发送">↑</button>
+  </div>
+  <div class="hint"><span id="sid">session: -</span><span id="tip">Enter 发送</span></div>
+</footer>
+<script src="/ui/core.js"></script>
+<script src="/ui/sessions.js"></script>
+<script src="/ui/chat.js"></script>
+<script src="/ui/providers.js"></script>
+<script src="/ui/settings.js"></script>
+</body>
+</html>
