@@ -32,8 +32,27 @@ class Runtime:
 
 def create_runtime(settings: Settings | None = None) -> Runtime:
     st = settings or default_settings
-    for directory in (st.sandbox_root, st.data_dir, st.data_dir / "sessions", st.data_dir / "tmp", st.workflows_dir):
+    for directory in (
+        st.sandbox_root,
+        st.sandbox_root / "media",
+        st.sandbox_root / "uploads",
+        st.data_dir,
+        st.data_dir / "sessions",
+        st.data_dir / "tmp",
+        st.workflows_dir,
+    ):
         directory.mkdir(parents=True, exist_ok=True)
+
+    # 预置模板只是目录：启动时把「没 Key、也不是当前在用」的空壳清掉，
+    # 避免一打开就是 11 家自带模型的假象。要哪家随时从目录里加回来。
+    from .providers import prune_empty
+
+    try:
+        removed = prune_empty(st).get("removed") or []
+        if removed:
+            logger.info("清理空壳提供商 %d 个：%s", len(removed), "、".join(removed))
+    except Exception:  # noqa: BLE001 - 配置坏了不该挡住启动
+        logger.warning("清理空壳提供商失败", exc_info=True)
 
     runtime = Runtime(st)
     runtime.default_system_prompt = load_default_system_prompt(st)
