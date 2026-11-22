@@ -181,9 +181,9 @@ def stream_chat(api: Api, message: str, session: list[str], state: dict) -> None
                     if len(lines) > 8:
                         print(c(DIM, f"    │ …（还有 {len(lines) - 8} 行）"))
                 elif kind == "warning":
-                    print(c(MAGENTA, "  ! " + str(ev.get("message")))
+                    print(c(MAGENTA, "  ! " + str(ev.get("message"))))
                 elif kind == "error":
-                    print(c(RED, "  错误：" + str(ev.get("message")))
+                    print(c(RED, "  错误：" + str(ev.get("message"))))
                 elif kind == "end":
                     if content_open:
                         print()
