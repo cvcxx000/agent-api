@@ -1,224 +1,183 @@
-"""Cookie 存储与管理：供工具/接口读写，也支持导入 Playwright storage_state 与 CDP 导出。"""
+"""Cookie 仓库：把浏览器/手工拿到的 Cookie 存到 data/cookies.json，供 Agent 运行时取用。"""
 
 from __future__ import annotations
 
 import json
-import logging
-import os
-import re
-import shutil
-import subprocess
 import threading
-import urllib.parse
 from pathlib import Path
 from typing import Any
 
-from .errors import NotFoundError, ToolError, ValidationError
+from .errors import ToolError
 from .utils import now_iso
 
-logger = logging.getLogger("agent.cookies")
-
-_SAFE = re.compile(r"[^A-Za-z0-9_-]+")
-_UNSAFE_HEADER = {"\r", "\n"}
+_KEEP_FIELDS = ("name", "value", "domain", "path", "expires", "httpOnly", "secure", "sameSite", "url")
 
 
-def _check(value: Any, field_name: str, maxlen: int = 4096) -> str:
-    text = str(value if value is not None else "").strip()
-    if not text:
-        raise ValidationError(f"{field_name} 不能为空")
-    if len(text) > maxlen:
-        raise ValidationError(f"{field_name} 过长（>{maxlen}）")
-    if any(ch in text for ch in _UNSAFE_HEADER):
-        raise ValidationError(f"{field_name} 含非法字符（换行/回车）")
-    return text
+def _norm_domain(domain: str) -> str:
+    return (domain or "").strip().lower().rstrip("/")
 
 
-def normalize_domain(domain: str) -> str:
-    host = str(domain or "").strip().to_dict() if False else str(domain or "").strip()
-    host = host.lower()
-    if "://" in host:
-        host = urllib.parse.urlsplit(host).netloc or host
-    host = host.split("/")[0]
-    host = host.split(":")[0]
-    host = host.lstrip(".")
-    if host.startswith("www."):
-        host = host[4:]
-    return host
+def _domain_match(key: str, target: str) -> bool:
+    a, b = key.lstrip("."), target.lstrip(".")
+    if not a or not b:
+        return False
+    return a == b or a.endswith("." + b) or b.endswith("." + a)
+
+
+def parse_cookie_input(raw: Any) -> list[dict[str, Any]]:
+    """支持：JSON 数组 / JSON 对象 / 'a=b; c=d' 字符串 / 单个 dict。"""
+    if isinstance(raw, dict):
+        raw = [raw]
+    if isinstance(raw, list):
+        cookies: list[dict[str, Any]] = []
+        for item in raw:
+            if isinstance(item, str):
+                cookies.extend(parse_cookie_input(item))
+            elif isinstance(item, dict):
+                entry = {k: item[k] for k in _KEEP_FIELDS if k in item}
+                if "name" not in entry or "value" not in entry:
+                    raise ToolError("Cookie 对象至少需要 name 和 value")
+                entry["name"] = str(entry["name"])
+                entry["value"] = str(entry["value"])
+                cookies.append(entry)
+        return cookies
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return []
+        if text[:1] in "[{":
+            try:
+                return parse_cookie_input(json.loads(text))
+            except json.JSONDecodeError as exc:
+                raise ToolError(f"Cookie JSON 解析失败：{exc}") from exc
+        pairs = []
+        for chunk in text.split(";"):
+            chunk = chunk.strip()
+            if not chunk or "=" not in chunk:
+                continue
+            name, _, value = chunk.partition("=")
+            pairs.append({"name": name.strip(), "value": value.strip()})
+        if not pairs:
+            raise ToolError("未能从字符串中解析出 Cookie（示例：a=1; b=2）")
+        return pairs
+    raise ToolError("不支持的 Cookie 格式")
 
 
 class CookieStore:
-    """domain -> name -> {value, path, domain, secure, http_only, expires, updated_at}"""
-
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self._data: dict[str, dict[str, dict[str, Any]]] = {}
-        self._load()
 
-    def _load(self) -> None:
+    def _load(self) -> dict[str, Any]:
         if not self.path.exists():
-            return
+            return {"updated_at": "", "domains": {}}
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                self._data = {k: v for k, v in raw.items() if isinstance(v, dict)}
-        except (OSError, json.JSONDecodeError) as exc:
-            logger.warning("Cookie 存储文件损坏 %s: %s", self.path, exc)
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {"updated_at": "", "domains": {}}
+        data.setdefault("domains", {})
+        return data
 
-    def _save(self) -> None:
+    def _save(self, data: dict[str, Any]) -> None:
+        data["updated_at"] = now_iso()
         tmp = self.path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(self._data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(self.path)
 
-    def set(
-        self,
-        domain: str,
-        name: str,
-        value: str,
-        path: str = "/",
-        secure: bool = False,
-        http_only: bool = False,
-        expires: float | None = None,
-    ) -> dict[str, Any]:
-        host = normalize_domain(domain)
-        if not host:
-            raise ValidationError("domain 不能为空")
-        cookie_name = _check(name, "name", 256)
-        cookie_value = _check(value, "value")
-        entry = {
-            "name": cookie_name,
-            "value": cookie_value,
-            "domain": host,
-            "path": path or "/",
-            "secure": bool(secure),
-            "http_only": bool(http_only),
-            "expires": expires,
-            "updated_at": now_iso(),
-        }
-        with self._lock:
-            self._data.setdefault(host, {})[cookie_name] = entry
-            self._save()
-        return entry
-
-    def get(self, domain: str, name: str) -> dict[str, Any]:
-        host = normalize_domain(domain)
-        with self._lock:
-            entry = (self._data.get(host) or {}).get(name)
-        if not entry:
-            raise NotFoundError(f"Cookie 不存在：{host} / {name}")
-        return entry
-
-    def delete(self, domain: str, name: str | None = None) -> int:
-        host = normalize_domain(domain)
-        with self._lock:
-            if name:
-                bucket = self._data.get(host) or {}
-                if name not in bucket:
-                    raise NotFoundError(f"Cookie 不存在：{host} / {name}")
-                bucket.pop(name)
-                if not bucket:
-                    self._data.pop(host, None)
-                count = 1
-            else:
-                count = len(self._data.pop(host, {}) or {})
-            self._save()
-        return count
-
-    def list(self, domain: str | None = None) -> list[dict[str, Any]]:
-        with self._lock:
-            if domain:
-                return list((self._data.get(normalize_domain(domain)) or {}).values())
-            items: list[dict[str, Any]] = []
-            for bucket in self._data.values():
-                items.extend(bucket.values())
-            items.sort(key=lambda c: (c.get("domain", ""), c.get("name", "")))
-            return items
-
-    def domains(self) -> list[str]:
-        with self._lock:
-            return sorted(self._data.keys())
-
-    def get_cookie_header(self, domain: str) -> str:
-        cookies = self.list(domain)
+    def set(self, domain: str, raw_cookies: Any, merge: bool = True) -> dict[str, Any]:
+        key = _norm_domain(domain)
+        if not key:
+            raise ToolError("domain 不能为空，例如 example.com")
+        cookies = parse_cookie_input(raw_cookies)
         if not cookies:
-            raise NotFoundError(f"{normalize_domain(domain)} 下没有 Cookie")
-        return "; ".join(f"{c['name']}={c['value']}" for c in cookies)
+            raise ToolError("没有解析到任何 Cookie")
+        with self._lock:
+            data = self._load()
+            bucket = data["domains"].get(key, {"cookies": []})
+            existing = {c.get("name"): c for c in bucket.get("cookies", [])}
+            if merge:
+                for cookie in cookies:
+                    existing[cookie["name"]] = {**existing.get(cookie["name"], {}), **cookie}
+            else:
+                existing = {c["name"]: c for c in cookies}
+            bucket["cookies"] = list(existing.values())
+            bucket["updated_at"] = now_iso()
+            data["domains"][key] = bucket
+            self._save(data)
+        return {"domain": key, "count": len(bucket["cookies"]), "names": [c["name"] for c in bucket["cookies"]]}
 
-    def import_storage_state(self, payload: Any) -> dict[str, Any]:
-        if isinstance(payload, (str, bytes)):
-            try:
-                payload = json.loads(payload)
-            except json.JSONDecodeError as exc:
-                raise ValidationError(f"storage_state 不是合法 JSON：{exc}") from exc
-        if isinstance(payload, dict) and "storage_state" in payload:
-            payload = payload["storage_state"]
-        if not isinstance(payload, dict) or not isinstance(payload.get("cookies"), list):
-            raise ValidationError("需要 Playwright storage_state 格式（包含 cookies 数组）")
-        imported = 0
-        for item in payload["cookies"]:
-            if not isinstance(item, dict):
-                continue
-            domain = item.get("domain")
-            name = item.get("name")
-            value = item.get("value")
-            if not (domain and name and value is not None):
-                continue
-            try:
-                self.set(
-                    domain=domain,
-                    name=name,
-                    value=value,
-                    path=item.get("path") or "/",
-                    secure=bool(item.get("secure")),
-                    http_only=bool(item.get("httpOnly") or item.get("http_only")),
-                    expires=item.get("expires"),
-                )
-            except ValidationError as exc:
-                logger.warning("跳过非法 Cookie %s/%s: %s", domain, name, exc)
-                continue
-            imported += 1
-        return {"imported": imported, "domains": self.domains()}
-
-    def export_storage_state(self) -> dict[str, Any]:
-        cookies = []
-        for item in self.list():
-            cookies.append(
-                {
-                    "name": item["name"],
-                    "value": item["value"],
-                    "domain": item["domain"],
-                    "path": item.get("path", "/"),
-                    "secure": bool(item.get("secure")),
-                    "httpOnly": bool(item.get("http_only")),
-                    "expires": item.get("expires"),
-                }
+    def get(self, domain: str | None = None) -> dict[str, Any]:
+        with self._lock:
+            data = self._load()
+        domains = data.get("domains", {})
+        if not domain:
+            return {"updated_at": data.get("updated_at", ""), "domains": domains}
+        target = _norm_domain(domain)
+        matched = {k: v for k, v in domains.items() if _domain_match(k, target)}
+        if not matched:
+            raise ToolError(
+                f"没有存过 {domain} 的 Cookie，可用 set_cookie 写入，或 import_cookie_from_storage_state 导入"
             )
-        return {"cookies": cookies, "origins": []}
+        return {"updated_at": data.get("updated_at", ""), "domains": matched}
 
-    def export_from_cdp(self, cdp_url: str, domain_filter: str | None = None) -> dict[str, Any]:
-        """从已开的 Chrome/Chromium CDP 端点拉取 Cookie（依赖 playwright，可选）。"""
-        if not cdp_url:
-            raise ValidationError("cdp_url 不能为空")
+    def delete(self, domain: str) -> dict[str, Any]:
+        target = _norm_domain(domain)
+        with self._lock:
+            data = self._load()
+            removed = [k for k in data["domains"] if _domain_match(k, target)]
+            for key in removed:
+                data["domains"].pop(key, None)
+            self._save(data)
+        return {"removed": removed}
+
+    def to_header(self, domain: str) -> str:
+        data = self.get(domain)
+        pairs = [f"{c['name']}={c['value']}" for bucket in data["domains"].values() for c in bucket.get("cookies", [])]
+        return "; ".join(pairs)
+
+    def import_storage_state(self, file_path: Path, domain: str | None = None) -> dict[str, Any]:
+        if not file_path.exists():
+            raise ToolError(f"storage_state 文件不存在：{file_path}")
+        try:
+            state = json.loads(file_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ToolError(f"storage_state 不是合法 JSON：{exc}") from exc
+        cookies = state.get("cookies") or []
+        if not isinstance(cookies, list) or not cookies:
+            raise ToolError("storage_state 里没有 cookies")
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for cookie in cookies:
+            cookie_domain = _norm_domain(str(cookie.get("domain") or ""))
+            if domain and not _domain_match(cookie_domain, domain):
+                continue
+            grouped.setdefault(cookie_domain or _norm_domain(domain or ""), []).append(cookie)
+        if not grouped:
+            raise ToolError(f"storage_state 中没有匹配 {domain} 的 Cookie")
+        summary = [self.set(key, items, merge=True) for key, items in grouped.items() if key]
+        return {"imported": summary}
+
+    def import_from_cdp(self, cdp_url: str, domain: str | None = None) -> dict[str, Any]:
+        """通过 Playwright 连接一个已登录的 Chrome（CDP），把 Cookie 拽下来（可选能力）。"""
         try:
             from playwright.sync_api import sync_playwright  # type: ignore
         except ImportError as exc:
             raise ToolError(
-                "未安装 playwright，无法从 CDP 取 Cookie。"
-                "可在电脑上执行 pip install playwright && playwright install chromium，"
-                "或直接浏览器插件导出 JSON 后 POST /api/cookies/import。"
+                "未安装 playwright，无法从浏览器直读 Cookie。可改用 storage_state 导入或手工 set_cookie"
             ) from exc
 
-        with sync_playwright() as p:
-            browser = p.chromium.connect_over_cdp(cdp_url, timeout=30000)
+        with sync_playwright() as pw:  # pragma: no cover
+            browser = pw.chromium.connect_over_cdp(cdp_url)
             contexts = browser.contexts or []
             if not contexts:
-                raise ToolError("CDP 端点没有可用的 browser context")
+                raise ToolError("已连接浏览器，但没有可用的 context")
             cookies = contexts[0].cookies()
-        if domain_filter:
-            host = normalize_domain(domain_filter)
-            cookies = [c for c in cookies if host in str(c.get("domain", ""))]
+        if domain:
+            cookies = [c for c in cookies if _domain_match(_norm_domain(c.get("domain", "")), domain)]
         if not cookies:
-            raise NotFoundError("CDP 没有返回 Cookie")
-        state = self.import_storage_state({"cookies": cookies})
-        return {**state, "cdp_url": cdp_url}
+            raise ToolError("浏览器里没有匹配的 Cookie（可能还没登录）")
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for cookie in cookies:
+            grouped.setdefault(_norm_domain(cookie.get("domain", "")), []).append(cookie)
+        summary = [self.set(key, items, merge=True) for key, items in grouped.items() if key]
+        return {"imported": summary}
