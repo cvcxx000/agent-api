@@ -26,6 +26,11 @@ cp .env.example .env        # 填 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL
 python3 run.py
 ```
 
+启动后有两种用法都能用：
+
+- **网页**：手机/电脑浏览器打开 `http://127.0.0.1:8000/ui`（或根路径 `/`），直接聊，工具调用实时显示。
+- **终端**：另一个窗口跑 `python3 scripts/repl.py`，纯终端交互。
+
 打开 `http://127.0.0.1:8000/health` 看到 `{"ok": true}` 就说明起来了。
 
 没有 Key 也能先跑：`LLM_MOCK=auto`（默认）时会用内置 MockLLM，真实走一次 `run_python`，用来验证工具链路。
@@ -38,17 +43,44 @@ cd agent-api
 python run.py
 ```
 
+然后在手机浏览器里开 `http://127.0.0.1:8000/ui` 即可。
+
+## 三种用法
+
+### 1）网页 UI（`/ui`）
+
+单文件 HTML，无 CDN、无构建步骤，风格是深灰字 + 陶土色强调的气泡对话：
+
+- 工具调用以可折叠卡片实时出现，展开看参数和输出；
+- SSE 流式，边生成边显示，可随时点「停止」中断；
+- 「设置」里填 `X-API-Token`、服务地址、**系统提示词**，全部存在浏览器本地；
+- 「新会话」按钮清空会话 id，下一次提问就是全新 session。
+
+### 2）终端 REPL（`scripts/repl.py`）
+
+```bash
+python3 scripts/repl.py                              # 默认连 127.0.0.1:8000
+python3 scripts/repl.py --base http://1.2.3.4:8000 --token abc
+```
+
+内置命令：`/new` 开新会话、`/session` 看当前 id、`/system <文本>` 改系统提示词、`/system-` 清空、`/help`、`/exit`。工具调用与输出直接打在屏幕上。
+
+### 3）curl / 代码调用
+
+见下方「接口一览」与 curl 示例，适合接到别的程序里。
+
 ## 配置（.env）
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | 监听地址。只本机用可设 `127.0.0.1` |
 | `API_TOKEN` | 空 | 留空不鉴权；对外暴露时强烈建议设置，请求头 `X-API-Token` |
-| `LLM_BASE_URL` | `https://api.openai.com/v1` | 任意 OpenAI 兼容接口（DeepSeek/通义/vLLM/Ollama…） |
+| `LLM_BASE_URL` | `https://api.openai.com/v1` | 任意 OpenAI 兼容接口（DeepSeek/通义/日日新/vLLM/Ollama…） |
 | `LLM_API_KEY` | 空 | 模型 Key |
 | `LLM_MODEL` | `gpt-4o-mini` | 模型名 |
 | `LLM_TEMPERATURE` / `LLM_MAX_TOKENS` / `LLM_TIMEOUT` | `0.3` / `4096` / `120` | 采样与超时 |
 | `LLM_MOCK` | `auto` | `auto`=没 Key 就用 Mock；`true` 强制 Mock；`false` 强制真实 |
+| `RATE_LIMIT_PER_MIN` | `7` | **上游限速**：每分钟最多发多少次模型请求，主/子 Agent 共用同一配额；`0` = 不限速 |
 | `AGENT_MAX_TURNS` | `16` | 单轮对话里最多几次「模型→工具」循环 |
 | `AGENT_HISTORY_LIMIT` | `80` | 发给模型的历史消息上限（自动从 user 消息处截断） |
 | `AGENT_MAX_SUBAGENTS` | `3` | **子 Agent 并发上限** |
@@ -61,12 +93,38 @@ python run.py
 | `WORKFLOWS_DIR` | `./workflows` | 工作流目录 |
 | `SYSTEM_PROMPT` / `SYSTEM_PROMPT_FILE` | 空 | 直接覆盖默认系统提示词 / 从文件读取 |
 
+### 限速说明（测试 Key 只有 7 次/分钟）
+
+`RATE_LIMIT_PER_MIN=7` 时，所有请求排队匀速发出（约每 8.6 秒一次），并在遇到 `429` 时读 `Retry-After` 头自动退避（最少 1 秒、最多 60 秒），不会把你的 Key 打到被封。
+
+注意：Agent 每回一次话可能花掉多次请求（调工具 → 再调模型），所以 7 次额度下“一句话”大约能跑 3 到 4 轮工具循环。想快点就把这个值调大，或换成正常额度的 Key 设 `0`。
+
+### 日日新（商汤 SenseNova）填法
+
+商汤有两套 OpenAI 兼容入口，路径只填到 `/v1`（程序会自己拼 `/chat/completions`）：
+
+| 平台 | `LLM_BASE_URL` | 说明 |
+| --- | --- | --- |
+| Token Plan（新） | `https://token.sensenova.cn/v1` | 控制台里的模型 ID 有 `sensenova-u1.5-lite` 等，聊天选对话模型 |
+| 大装置 ModelStudio | `https://api.sensenova.cn/compatible-mode/v1` | 常见对话模型 ID：`SenseChat-5`、`SenseChat-5-1202` |
+
+验证一行：
+
+```bash
+curl -s https://token.sensenova.cn/v1/chat/completions \
+  -H "Authorization: Bearer 你的Key" -H 'Content-Type: application/json' \
+  -d '{"model":"你的模型ID","messages":[{"role":"user","content":"说一句你好"}]}'
+```
+
+返回里有 `choices` 就是通了；报 `401` 是 Key 错，`404` 是 `LLM_MODEL` 名字不对。
+
 ## 接口一览
 
-除 `/health` 外都要带 `X-API-Token`（如果设置了 `API_TOKEN`）。
+除 `/health`、`/`、`/ui`、`/favicon.ico` 外都要带 `X-API-Token`（如果设置了 `API_TOKEN`）。
 
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
+| GET | `/` 、`/ui` | 网页聊天页（免鉴权） |
 | GET | `/health` | 健康检查 |
 | GET | `/api/config` | 当前配置（不含密钥） |
 | GET | `/api/tools` | 已注册工具及其 JSON Schema |
@@ -208,8 +266,9 @@ agent-api/
 ├─ agent_api/
 │  ├─ server.py               # ThreadingHTTPServer + 路由 + SSE
 │  ├─ api.py                  # 所有接口实现
+│  ├─ webui.py                # 单文件网页聊天页（/ 、/ui）
 │  ├─ agent.py                # 模型→工具循环
-│  ├─ llm.py                  # urllib 调 OpenAI 兼容接口 + Mock
+│  ├─ llm.py                  # urllib 调 OpenAI 兼容接口 + Mock + 限速
 │  ├─ sessions.py             # 会话落盘 + 子 Agent 线程调度
 │  ├─ skills.py               # SKILL.md 扫描
 │  ├─ workflows.py            # JSON 工作流引擎
@@ -221,7 +280,9 @@ agent-api/
 ├─ workflows/demo_pipeline.json
 ├─ workspace/                 # 默认沙箱（Agent 的文件都在这）
 ├─ data/                      # 会话 / Cookie / 临时脚本
-└─ scripts/smoke_test.py      # 端到端自检（22 项）
+└─ scripts/
+   ├─ repl.py                 # 终端交互式对话
+   └─ smoke_test.py           # 端到端自检（22 项）
 ```
 
 ## 自检
