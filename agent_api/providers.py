@@ -43,6 +43,26 @@ def _tail(key: str) -> str:
     return "**" + key[-2:]
 
 
+_VISION_RE = re.compile(
+    r"(vision|-vl\b|/vl|4o\b|4\.1|gemini|claude-3|glm-4v|omni|multimodal|pixtral|llava|qwen2[.-]?5?-vl)",
+    re.I,
+)
+
+
+def looks_vision(model: str) -> bool:
+    """按模型名猜这家模型能不能吃图（gpt-4o / *-vl / gemini / glm-4v ...）。"""
+    return bool(_VISION_RE.search(str(model or "")))
+
+
+def vision_enabled(provider: dict[str, Any], model: str = "") -> bool:
+    """三态：显式开 → 开；显式关（vision_off）→ 关；否则按模型名自动判断。"""
+    if provider.get("vision_off"):
+        return False
+    if provider.get("vision"):
+        return True
+    return looks_vision(model)
+
+
 def _seed(settings: Settings) -> dict[str, Any]:
     """新装时只放一条：.env 里那套配置（有 Key 才算数），其余一律留空。
 
@@ -77,7 +97,6 @@ def _seed(settings: Settings) -> dict[str, Any]:
         # .env 没 Key：一条都不放，界面显示「还没有提供商」，从目录加。
         active = {"provider": "", "model": ""}
     return {"active": active, "providers": providers}
-
 
 
 def load(settings: Settings) -> dict[str, Any]:
@@ -135,6 +154,11 @@ def public(settings: Settings) -> dict[str, Any]:
     active = data.get("active") or {}
     items = []
     for provider in data["providers"]:
+        if provider["id"] == active.get("provider"):
+            probe_model = active.get("model", "")
+        else:
+            models = provider.get("models") or []
+            probe_model = models[0] if models else ""
         items.append(
             {
                 "id": provider["id"],
@@ -148,7 +172,7 @@ def public(settings: Settings) -> dict[str, Any]:
                 "key_tail": _tail(provider.get("api_key", "")),
                 "is_active": provider["id"] == active.get("provider"),
                 "active_model": active.get("model", "") if provider["id"] == active.get("provider") else "",
-                "vision": bool(provider.get("vision")),
+                "vision": vision_enabled(provider, probe_model),
                 "is_preset": bool(provider.get("preset")),
             }
         )
@@ -207,6 +231,7 @@ def upsert(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
         provider["enabled"] = bool(body.get("enabled"))
     if "vision" in body:
         provider["vision"] = bool(body.get("vision"))
+        provider["vision_off"] = not bool(body.get("vision"))
     if isinstance(body.get("clear_key"), bool) and body["clear_key"]:
         provider["api_key"] = ""
     model = body.get("model")
@@ -315,7 +340,7 @@ def add_from_preset(settings: Settings, preset_id: str, api_key: str = "", base_
         "api_key": str(api_key or "").strip(),
         "enabled": True,
         "models": [model.strip()] if model and model.strip() else [],
-        "vision": False,
+        "vision": bool(preset.get("vision", False)),
         "preset": True,
     }
     if not provider["base_url"]:
@@ -385,6 +410,7 @@ def set_vision(settings: Settings, provider_id: str, vision: bool) -> dict[str, 
     data = load(settings)
     provider = _find(data, provider_id)
     provider["vision"] = bool(vision)
+    provider["vision_off"] = not bool(vision)
     save(settings, data)
     return public(settings)
 
@@ -400,6 +426,6 @@ def active_meta(settings: Settings) -> dict[str, Any]:
                 "name": provider["name"],
                 "base_url": provider["base_url"],
                 "model": active.get("model", ""),
-                "vision": bool(provider.get("vision")),
+                "vision": vision_enabled(provider, active.get("model", "")),
             }
     return {"id": "", "name": "", "base_url": settings.llm_base_url, "model": settings.llm_model, "vision": False}
