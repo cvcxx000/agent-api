@@ -357,6 +357,7 @@ COMMANDS = [
     ("/video", "出片：/video 海浪慢镜头"),
     ("/md", "渲染 Markdown：/md 笔记.md"),
     ("/file", "看文本：/file 路径"),
+    ("/new", "开新会话"),
     ("/sessions", "列出会话并切换"),
     ("/session", "看当前会话 id"),
     ("/quit", "退出"),
