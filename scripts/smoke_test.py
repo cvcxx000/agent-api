@@ -92,7 +92,7 @@ check("read_file", "第一行" in body.get("result", ""), str(body)[:300])
 status, body = jcall("POST", "/api/files", {"path": "../escape.txt", "content": "x"})
 check("sandbox blocks escape", body.get("ok") is False, str(body)[:300])
 
-status, body = jcall("POST", "/api/execute/python", {"code": "print(sum(range(10)))"})
+status, body = jcall("POST", "/api/execute/python", {"code": "print(sum(range(10)))})
 check("run_python", "45" in body.get("result", ""), str(body)[:300])
 
 status, body = jcall("POST", "/api/execute/python", {"code": "import time; time.sleep(5)", "timeout": 1})
@@ -141,6 +141,77 @@ check("workflow run", bool(body.get("outputs", {}).get("stats")), json.dumps(bod
 
 status, raw = call("POST", "/api/chat/stream", {"message": "流式自检", "session_id": session_id}, timeout=60)
 check("chat stream", status == 200 and "event: end" in raw and "event: final" in raw, raw[:300])
+check("chat stream thinking", "event: reasoning_delta" in raw, raw[:300])
+
+# ---- 提供商：目录 / 空种 / 自定义模型 / 切换 / 清理空壳 ----
+status, body = jcall("GET", "/api/providers")
+check("providers start empty", isinstance(body.get("providers"), list) and len(body["providers"]) == 0, str(body)[:300])
+status, body = jcall("GET", "/api/providers/catalog")
+check("provider catalog", len(body.get("providers") or []) >= 10, str(body)[:200])
+
+status, body = jcall(
+    "POST",
+    "/api/providers",
+    {"name": "自检中转站", "base_url": "https://example.com/v1", "api_key": "sk-smoke-123456", "models": ["m-a", "m-b"]},
+)
+check("add custom provider", any(p["id"] == "custom" and p["model_count"] == 2 for p in body.get("providers", [])), str(body)[:300])
+status, body = jcall("POST", "/api/providers/custom/activate", {"model": "m-b"})
+check("activate real model", body.get("ok") is True and body.get("model") == "m-b", str(body)[:300])
+check("activate unknown model rejected", jcall("POST", "/api/providers/custom/activate", {"model": "nope"})[0] == 400)
+
+status, body = jcall("POST", "/api/providers/add", {"preset": "moonshot"})
+check("add preset without key", any(p["id"] == "moonshot" and not p["has_key"] for p in body.get("providers", [])), str(body)[:300])
+status, body = jcall("POST", "/api/providers/prune", {})
+check("prune empty shells", body.get("count", 0) >= 1 and not any(p["id"] == "moonshot" for p in body.get("providers", [])), str(body)[:300])
+check("prune keeps active provider", any(p["id"] == "custom" for p in body.get("providers", [])))
+
+status, body = jcall("POST", "/api/providers/custom/vision", {"vision": True})
+check("vision toggle", any(p["id"] == "custom" and p["vision"] for p in body.get("providers", [])), str(body)[:200])
+
+# ---- 搜索 / 图片 / 视频 配置 ----
+status, body = jcall("GET", "/api/ui/search")
+check("search presets", len(body.get("presets") or []) >= 5, str(body)[:200])
+status, body = jcall("POST", "/api/ui/search", {"provider": "ddg", "api_key": "", "max_results": 4})
+check("search config saved", body.get("ready") is True and body.get("provider") == "ddg", str(body)[:300])
+
+status, body = jcall("GET", "/api/ui/media")
+check("media presets", len((body.get("image") or {}).get("presets") or []) >= 3 and len((body.get("video") or {}).get("presets") or []) >= 2)
+status, body = jcall(
+    "POST",
+    "/api/ui/media/image",
+    {"preset": "custom-img", "base_url": "https://example.com/v1", "model": "img-x", "api_key": "sk-smoke-123456", "size": "512x512"},
+)
+check("image config saved", (body.get("image") or {}).get("ready") is True, str(body)[:300])
+status, body = jcall(
+    "POST",
+    "/api/ui/media/video",
+    {"preset": "custom-video", "base_url": "https://example.com/v1", "model": "vid-x", "api_key": "sk-smoke-123456", "mode": "generic_video"},
+)
+check("video config saved", (body.get("video") or {}).get("ready") is True and body["video"]["mode"] == "generic_video", str(body)[:300])
+
+# ---- 上传 / 预览 / 静态文件 ----
+png = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+status, body = jcall("POST", "/api/ui/upload", {"name": "dot.png", "data_url": "data:image/png;base64," + png})
+check("upload image", body.get("ok") is True and body.get("url", "").startswith("/files/uploads/"), str(body)[:300])
+if body.get("url"):
+    status, _ = call("GET", body["url"], token=None)
+    check("upload served", status == 200)
+
+jcall("POST", "/api/files", {"path": "notes.md", "content": "# 标题\n\n- 一\n- 二\n"})
+status, body = jcall("GET", "/api/ui/preview?path=notes.md")
+check("preview markdown", body.get("suffix") == ".md" and "标题" in body.get("content", ""), str(body)[:200])
+check("preview blocks escape", jcall("GET", "/api/ui/preview?path=../data/providers.json")[0] == 400)
+
+for asset in ("/ui", "/ui/app.css", "/ui/core.js", "/ui/sessions.js", "/ui/canvas.js", "/ui/chat.js", "/ui/providers.js", "/ui/settings.js"):
+    status, _ = call("GET", asset, token=None)
+    if status != 200:
+        check("static " + asset, False, str(status))
+        break
+else:
+    check("all ui assets", True)
+
 
 server.shutdown()
 server.server_close()
