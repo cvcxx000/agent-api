@@ -115,6 +115,7 @@ footer{
 </footer>
 <script>
 const $ = (id) => document.getElementById(id);
+const NL = String.fromCharCode(10);
 const LS = {
   token: 'agent.token',
   session: 'agent.session',
@@ -219,10 +220,10 @@ async function send(){
       if (done) break;
       buf += dec.decode(value, {stream:true});
       let idx;
-      while ((idx = buf.indexOf('\n\n')) >= 0){
+      while ((idx = buf.indexOf(NL + NL)) >= 0){
         const chunk = buf.slice(0, idx);
         buf = buf.slice(idx + 2);
-        const dataLine = chunk.split('\n').find(l => l.startsWith('data: '));
+        const dataLine = chunk.split(NL).find(l => l.startsWith('data: '));
         if (!dataLine) continue;
         let ev;
         try { ev = JSON.parse(dataLine.slice(6)); } catch(e){ continue; }
