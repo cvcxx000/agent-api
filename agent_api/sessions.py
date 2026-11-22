@@ -17,6 +17,23 @@ from .utils import new_id, now_iso
 logger = logging.getLogger("agent.sessions")
 
 TERMINAL = {"done", "failed", "cancelled"}
+_EMPTY_TITLES = {"", "未命名会话", "新会话"}
+
+
+def _guess_title(messages: list[dict[str, Any]]) -> str:
+    """用第一句用户话提炼一个短标题（纯本地规则，不花模型额度）。"""
+    for msg in messages or []:
+        if msg.get("role") != "user":
+            continue
+        text = " ".join(str(msg.get("content") or "").split())
+        if not text:
+            continue
+        for prefix in ("请帮我", "帮我", "麻烦你", "麻烦", "请你", "请", "能不能", "可以帮我", "可以"):
+            if text.startswith(prefix):
+                text = text[len(prefix):].lstrip("，,、 ")
+        text = text.split("。")[0].strip()
+        return text[:20]
+    return ""
 
 
 @dataclass
@@ -134,6 +151,10 @@ class SessionStore:
     def save(self, session: Session) -> None:
         if not session.persist:
             return
+        if session.title in _EMPTY_TITLES:
+            guessed = _guess_title(session.messages)
+            if guessed:
+                session.title = guessed
         session.updated_at = now_iso()
         with self._lock:
             self._cache[session.id] = session
@@ -163,6 +184,15 @@ class SessionStore:
                 continue
             if kind and session.kind != kind:
                 continue
+            if session.title in _EMPTY_TITLES:
+                guessed = _guess_title(session.messages)
+                if guessed:
+                    session.title = guessed
+                    try:
+                        self._write(session)
+                        self._cache[session.id] = session
+                    except OSError:
+                        pass
             items.append(session)
         items.sort(key=lambda s: s.updated_at, reverse=True)
         return [s.to_dict(include_messages=False) for s in items]
