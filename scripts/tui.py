@@ -32,10 +32,23 @@ import json
 import sys
 import textwrap
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
 TTY = sys.stdout.isatty()
+
+# 拼 URL 时保留结构字符，其余（中文、空格、# 等）一律百分号编码。
+_SAFE_CHARS = "/?&=%:+~@!$'()*,;[]._-"
+
+
+def enc_path(path: str) -> str:
+    """把带中文的路径编成合法 URL：/api/sessions/x/skills/数据报告 → ...%E6%95%B0...
+
+    urllib 只认真 ASCII，直接拼中文会抛 UnicodeEncodeError（而且报的是一整段
+    traceback，看起来像服务炸了）。所有请求路径统一从这里过一遍。
+    """
+    return urllib.parse.quote(str(path), safe=_SAFE_CHARS)
 
 
 def c(code: str, text: str) -> str:
@@ -62,7 +75,7 @@ class Api:
         return head
 
     def get(self, path: str) -> dict:
-        req = urllib.request.Request(self.base + path, headers=self.headers())
+        req = urllib.request.Request(self.base + enc_path(path), headers=self.headers())
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 return json.loads(resp.read().decode("utf-8") or "{}")
@@ -70,10 +83,12 @@ class Api:
             raise SystemExit("接口错误：" + exc.read().decode("utf-8", "replace")[:400]) from exc
         except urllib.error.URLError as exc:
             raise SystemExit(f"连不上 {self.base}：{exc.reason}") from exc
+        except Exception as exc:  # noqa: BLE001  URL 里出现编码不了的字符等
+            raise SystemExit(f"请求失败（{path}）：{exc}") from exc
 
     def post(self, path: str, body: dict) -> dict:
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-        req = urllib.request.Request(self.base + path, data=data, method="POST", headers=self.headers())
+        req = urllib.request.Request(self.base + enc_path(path), data=data, method="POST", headers=self.headers())
         try:
             with urllib.request.urlopen(req, timeout=600) as resp:
                 return json.loads(resp.read().decode("utf-8") or "{}")
@@ -82,6 +97,8 @@ class Api:
             raise RuntimeError(f"HTTP {exc.code}：{detail}") from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(f"连不上 {self.base}：{exc.reason}") from exc
+        except Exception as exc:  # noqa: BLE001  URL 里出现编码不了的字符等
+            raise RuntimeError(f"请求失败（{path}）：{exc}") from exc
 
 
 def wrap(text: str, indent: str = "  ") -> str:
@@ -442,9 +459,12 @@ def cmd_load_skill(api, state, name):
         print(c(RED, "先随便说一句话开个会话，再载技能"))
         return
     try:
-        api.post("/api/sessions/" + sid + "/skills/" + name, {})
+        api.post("/api/sessions/" + enc_path(sid) + "/skills/" + enc_path(name), {})
     except SystemExit as exc:
         print(c(RED, str(exc)))
+        return
+    except Exception as exc:  # noqa: BLE001  不再掉一大片 traceback
+        print(c(RED, "载入技能失败：" + str(exc)))
         return
     print(c(GREEN, "已载入技能 " + name))
 

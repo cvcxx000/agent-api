@@ -14,6 +14,7 @@ import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -119,6 +120,10 @@ check("runtime system prompt", body.get("ok") is True, str(body)[:200])
 
 status, body = jcall("POST", f"/api/sessions/{session_id}/skills/data-report", {})
 check("load skill", body.get("ok") is True, str(body)[:200])
+
+# 回归：名字带中文的 skill（曾经在客户端直接拼 URL 会抛 UnicodeEncodeError，掉一大片 traceback）
+status, body = jcall("POST", f"/api/sessions/{session_id}/skills/{quote('中文示例', safe='')}", {})
+check("load 中文名 skill", body.get("ok") is True and body.get("skill") == "中文示例", str(body)[:200])
 
 spawned = []
 for i in range(3):
