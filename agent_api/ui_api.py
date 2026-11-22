@@ -91,7 +91,7 @@ def mount(router) -> None:
 
     def provider_toggle(req, params):
         body = req.json()
-        return Response(200, provider_store.toggle(req.runtime.settings, params["pid"], bool(body.get("enabled")))
+        return Response(200, provider_store.toggle(req.runtime.settings, params["pid"], bool(body.get("enabled"))))
 
     def provider_add_model(req, params):
         body = req.json()
