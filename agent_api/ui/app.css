@@ -472,3 +472,144 @@ footer{
 @media (prefers-reduced-motion:reduce){
   *{transition-duration:.01ms !important; animation-duration:.01ms !important}
 }
+
+/* ---------- 思考过程 ---------- */
+.think{
+  background:var(--card-2); border:.5px solid var(--line-2); border-radius:14px;
+  margin:0 0 10px; overflow:hidden;
+  animation:fade .3s var(--ease);
+}
+.think summary{
+  list-style:none; cursor:pointer; padding:9px 13px;
+  font-size:12.5px; font-weight:500; color:var(--ink-2);
+  display:flex; align-items:center; gap:7px;
+}
+.think summary::-webkit-details-marker{display:none}
+.think .tdot{
+  width:7px; height:7px; border-radius:50%; background:var(--accent); flex:none;
+  box-shadow:0 0 0 3px var(--accent-soft);
+}
+.think .tsec{margin-left:auto; font-size:11px; color:var(--ink-3); font-weight:400}
+.think-body{
+  padding:0 13px 12px; font-size:12.5px; line-height:1.65; color:var(--ink-3);
+  white-space:pre-wrap; max-height:240px; overflow:auto; word-break:break-word;
+}
+@keyframes fade{from{opacity:0; transform:translateY(4px)} to{opacity:1; transform:none}}
+
+/* ---------- Markdown 增强：图片 / 视频 / 链接 / 代码 ---------- */
+.md-a{color:var(--accent); text-decoration:none; border-bottom:.5px solid rgba(10,132,255,.35); word-break:break-all}
+.md-a:active{opacity:.7}
+.md-fig{margin:10px 0}
+.md-img{
+  display:block; max-width:100%; border-radius:14px; border:.5px solid var(--line-2);
+  box-shadow:var(--shadow-s); background:var(--card);
+}
+.md-video{display:block; width:100%; max-height:60vh; border-radius:14px; background:#000; box-shadow:var(--shadow-s)}
+.bubble-thumbs{display:flex; gap:6px; justify-content:flex-end; margin-top:-2px}
+.bubble-thumbs img{
+  width:64px; height:64px; object-fit:cover; border-radius:12px;
+  border:.5px solid var(--line); box-shadow:var(--shadow-s);
+}
+.bot .text blockquote{
+  margin:0 0 10px; padding:6px 0 6px 12px; border-left:3px solid var(--accent-soft);
+  color:var(--ink-2); font-size:14.5px;
+}
+.codebox{
+  background:var(--card); border:.5px solid var(--line-2); border-radius:14px;
+  box-shadow:var(--shadow-s); margin:10px 0; overflow:hidden;
+}
+.codebar{
+  display:flex; align-items:center; gap:8px; padding:7px 12px;
+  border-bottom:.5px solid var(--line-2); background:var(--card-2);
+}
+.codebar .lang{font:11px var(--mono); color:var(--ink-3); letter-spacing:.04em; text-transform:uppercase}
+.codebar .copy{
+  margin-left:auto; border:0; background:transparent; color:var(--accent);
+  font-size:12px; font-weight:500; padding:3px 8px; border-radius:8px; cursor:pointer;
+}
+.codebar .copy:active{background:var(--accent-soft)}
+.codebox .code{border:0; box-shadow:none; margin:0; border-radius:0; background:transparent}
+.mdbox{white-space:normal; font:15px/1.7 var(--font); color:var(--ink); max-height:52vh}
+.mdbox .h{margin-top:12px}
+
+/* ---------- 附件、画板入口、模型胶囊 ---------- */
+.attachRow{display:none; gap:8px; max-width:720px; margin:0 auto 8px; padding:0 2px; overflow-x:auto}
+.attachRow.on{display:flex}
+.attachChip{
+  position:relative; flex:none; display:flex; align-items:center; gap:7px;
+  background:var(--card); border:.5px solid var(--line); border-radius:12px;
+  padding:5px 8px 5px 5px; box-shadow:var(--shadow-s);
+  font-size:11.5px; color:var(--ink-2);
+}
+.attachChip img{width:34px; height:34px; object-fit:cover; border-radius:8px}
+.attachX{
+  border:0; background:var(--chip); color:var(--ink-3); font-size:10px;
+  width:18px; height:18px; border-radius:50%; cursor:pointer; line-height:1;
+}
+.attachX:active{background:var(--red-soft); color:var(--red)}
+.composer .comp-btn{
+  flex:none; width:36px; height:36px; margin-right:2px; border:0; border-radius:50%;
+  background:var(--chip); color:var(--ink-2); font-size:16px; cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
+  transition:transform .2s var(--ease), background .2s var(--ease);
+}
+.composer .comp-btn:active{transform:scale(.9); background:var(--accent-soft); color:var(--accent)}
+.modelChip{
+  border:0; background:var(--chip); color:var(--ink-2);
+  font-size:10.5px; padding:3px 8px; border-radius:var(--pill); cursor:pointer;
+  max-width:46vw; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.modelChip:active{background:var(--accent-soft); color:var(--accent)}
+.hint{flex-wrap:wrap; gap:6px}
+
+/* ---------- 画板 ---------- */
+.board{
+  position:fixed; inset:0; z-index:24; background:var(--bg);
+  display:none; flex-direction:column;
+  transform:translateY(100%); transition:transform .34s var(--ease);
+}
+.board.on{display:flex; transform:none}
+.board header{
+  position:static; flex:none;
+  background:var(--nav-bg);
+  -webkit-backdrop-filter:saturate(180%) blur(20px); backdrop-filter:saturate(180%) blur(20px);
+  border-bottom:.5px solid var(--line);
+}
+.board-tools{
+  flex:none; display:flex; align-items:center; gap:10px; padding:10px 14px;
+  border-bottom:.5px solid var(--line-2); background:var(--card);
+  overflow-x:auto;
+}
+.brush-dots{display:flex; gap:8px; align-items:center}
+.swatch{
+  width:24px; height:24px; border-radius:50%; border:2px solid transparent; cursor:pointer;
+  box-shadow:0 0 0 .5px var(--line);
+}
+.swatch.on{border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft)}
+.board-tools input[type=range]{width:88px; accent-color:var(--accent)}
+.board-stage{
+  flex:1; min-height:0; padding:10px 12px; background:var(--bg);
+  display:flex; align-items:stretch; justify-content:stretch;
+}
+.board-stage canvas{
+  width:100%; height:100%; background:#fff; border-radius:16px;
+  box-shadow:var(--shadow-s); border:.5px solid var(--line-2); touch-action:none; cursor:crosshair;
+}
+.board-tip{flex:none; padding:0 14px calc(12px + env(safe-area-inset-bottom)); font-size:11px; color:var(--ink-3)}
+
+/* ---------- 提供商行内「当前」 ---------- */
+.mrow.now{border-color:rgba(10,132,255,.45); background:var(--accent-soft)}
+.row.now{background:var(--accent-soft)}
+#sheetBody .kv span{max-width:60%}
+#sheetBody video{width:100%; border-radius:12px; margin-top:8px}
+
+/* ---------- 表单：标签与主按钮 ---------- */
+.lab{font-size:11.5px; color:var(--ink-3); margin:14px 0 6px; padding-left:4px; letter-spacing:.02em}
+#sheetBody .mini2.primary{
+  display:block; width:100%; margin-top:16px; padding:13px 16px;
+  border-radius:13px; font-size:15px; font-weight:600; text-align:center;
+}
+#sheetBody .row2 .mini2{flex:1 1 45%; text-align:center}
+.board-tools .mini2{flex:none; white-space:nowrap; padding:8px 12px}
+.board-tools .brush-dots{flex:none}
+.board-tools input[type=range]{flex:none; min-width:64px}
