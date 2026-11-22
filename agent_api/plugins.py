@@ -2,7 +2,7 @@
 
 一个插件就是一个 .py（或 <name>/__init__.py）文件，两种写法都行：
 
-    PLUGIN = {"name": "word_count", "description": "统计字数"}
+    PLUGIN = {"name": "word_count", "description": "统计字数", "version": "1.0", "tags": ["text"]}
 
     def register(registry):
         registry.register("word_count", "...", {...}, handler)
@@ -15,6 +15,7 @@
 加载规则（故意这样的）：
 - 启动时只装「已启用」的插件；新掉进目录的插件默认是停着的。
 - 启用 = 执行任意代码，必须先拿到用户同意（plugin_enable 要 confirm=true）。
+- 干跑（validate）只 import + register 到临时注册表，不启用也不写状态。
 - 单个插件报错只记在这个插件上，不影响服务启动，也不影响别的插件。
 - 重载时先把上次注册的工具撤掉，避免重复注册。
 """
@@ -105,6 +106,9 @@ class PluginManager:
                     "name": name,
                     "path": str(path),
                     "description": record.get("description") or "",
+                    "version": record.get("version") or "",
+                    "author": record.get("author") or "",
+                    "tags": list(record.get("tags") or []),
                     "enabled": name in enabled,
                     "loaded": name in self._loaded,
                     "tools": list(self._loaded.get(name) or []),
@@ -137,25 +141,29 @@ class PluginManager:
         spec.loader.exec_module(module)
         return module
 
-    def _register_tools(self, name: str, module: Any) -> list[str]:
-        if self.registry is None:
-            return []
-        before = set(self.registry.names())
+    def _register_into(self, registry: Any, module: Any) -> list[str]:
+        """把一个插件模块注册进任意注册表（真装和干跑共用）。"""
+        before = set(registry.names())
         if hasattr(module, "register") and callable(module.register):
-            module.register(self.registry)
+            module.register(registry)
         tools = getattr(module, "TOOLS", None)
         if isinstance(tools, list):
             for spec in tools:
                 if not isinstance(spec, dict) or not spec.get("name"):
                     continue
-                self.registry.register(
+                registry.register(
                     str(spec["name"]),
                     str(spec.get("description") or ""),
                     spec.get("parameters") or {"type": "object", "properties": {}},
                     spec.get("handler") or (lambda ctx, args: ""),
                     bool(spec.get("requires_spawn", False)),
                 )
-        return [n for n in self.registry.names() if n not in before]
+        return [n for n in registry.names() if n not in before]
+
+    def _register_tools(self, name: str, module: Any) -> list[str]:
+        if self.registry is None:
+            return []
+        return self._register_into(self.registry, module)
 
     def load_one(self, name: str) -> dict[str, Any]:
         """装一个插件并把结果写进状态（失败也写，便于 plugin_list 看见原因）。"""
@@ -169,10 +177,15 @@ class PluginManager:
         try:
             module = self._import(name, path)
             meta = getattr(module, "PLUGIN", None)
-            desc = str(meta.get("description") or "") if isinstance(meta, dict) else ""
+            meta = meta if isinstance(meta, dict) else {}
+            desc = str(meta.get("description") or "")
             tools = self._register_tools(name, module)
             self._loaded[name] = tools
             record["description"] = desc or record.get("description") or ""
+            record["version"] = str(meta.get("version") or "")
+            record["author"] = str(meta.get("author") or "")
+            tags = meta.get("tags")
+            record["tags"] = [str(t) for t in tags if str(t).strip()] if isinstance(tags, list) else []
             record["error"] = ""
             record["tools"] = tools
             record["loaded_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -226,6 +239,49 @@ class PluginManager:
         state["enabled"] = [x for x in (state.get("enabled") or []) if x != name]
         self._save(state)
         return {"ok": True, "name": name, "removed_tools": removed, **self.describe()}
+
+    # ---------- 干跑（不启用、不写状态） ----------
+    def validate(self, name: str = "", code: str = "") -> dict[str, Any]:
+        """只测不装：能不能 import、register 有没有报错、会注册出哪些工具。"""
+        from .tools.base import ToolRegistry
+
+        body = str(code or "")
+        label = str(name or "").strip() or "inline"
+        path: Path | None = None
+        cleanup = False
+        if body.strip():
+            try:
+                compile(body, f"{label}.py", "exec")
+            except SyntaxError as exc:
+                return {"ok": False, "stage": "syntax", "error": f"第 {exc.lineno} 行：{exc.msg}"}
+            tmp = Path(self.st.data_dir) / "tmp"
+            tmp.mkdir(parents=True, exist_ok=True)
+            path = tmp / f"probe_{label}.py"
+            path.write_text(body, encoding="utf-8")
+            cleanup = True
+        else:
+            path = self._find(label)
+            if path is None:
+                raise NotFoundError(f"没有这个插件：{label}")
+        try:
+            module = self._import(f"probe_{label}", path)
+            meta = getattr(module, "PLUGIN", None)
+            meta = meta if isinstance(meta, dict) else {}
+            registry = ToolRegistry()
+            tools = self._register_into(registry, module)
+            if not tools:
+                return {"ok": False, "stage": "register", "error": "register() 一个工具也没注册出来"}
+            return {
+                "ok": True,
+                "tools": tools,
+                "meta": meta,
+                "descriptions": {t: registry.get(t).description for t in tools},
+            }
+        except Exception as exc:  # noqa: BLE001 - 干跑就是要接住它
+            return {"ok": False, "stage": "import", "error": f"{type(exc).__name__}: {exc}"}
+        finally:
+            if cleanup and path is not None:
+                path.unlink(missing_ok=True)
 
     # ---------- 新建 / 改写 ----------
     def _check_name(self, name: str) -> str:
