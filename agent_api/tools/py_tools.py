@@ -75,7 +75,7 @@ def run_python(ctx: ToolContext, args: dict[str, Any]) -> str:
         raise ToolError("code 不能为空")
     if len(code) > MAX_CODE_CHARS:
         raise ToolError(f"代码过长（>{MAX_CODE_CHARS} 字符），请拆分或写到文件里再运行")
-    hits = guard.check(code)
+    hits = guard.check(code, root=settings.sandbox_root)
     if hits and not args.get("confirm"):
         raise ToolError(guard.refusal("run_python", code, hits))
     timeout = max(1, min(int(args.get("timeout") or settings.python_timeout), 600))
@@ -103,7 +103,7 @@ def run_shell(ctx: ToolContext, args: dict[str, Any]) -> str:
     command = args.get("command")
     if not isinstance(command, str) or not command.strip():
         raise ToolError("command 不能为空")
-    hits = guard.check(command)
+    hits = guard.check(command, root=settings.sandbox_root)
     if hits and not args.get("confirm"):
         raise ToolError(guard.refusal("run_shell", command, hits))
     timeout = max(1, min(int(args.get("timeout") or settings.shell_timeout), 600))
@@ -131,8 +131,8 @@ def register(registry: ToolRegistry) -> None:
     registry.register(
         "run_shell",
         "执行 shell 命令（需 ENABLE_SHELL=true）。cwd 是 workspace，bash/sh 自动探测（兼容 Termux）。"
-        "rm -rf 系统目录、提权、卸载软件包、重启系统这类高危命令会被拦一次，"
-        "先把风险说给用户，用户同意后带 confirm=true 重调。",
+        "高危不只系统目录：一次删 ≥100 个文件、或动到 uploads/outputs/media/data/plugins 也会被拦一次，"
+        "先把影响说给用户，用户同意后带 confirm=true 重调。",
         {
             "type": "object",
             "properties": {
