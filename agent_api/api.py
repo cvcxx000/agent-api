@@ -87,16 +87,41 @@ def build_router(runtime: Any) -> Router:
                 session.append_system_prompt(body["system_prompt"], mode="replace")
         return session
 
+    def _attachments(body: dict[str, Any]) -> list[dict[str, Any]]:
+        raw = body.get("attachments")
+        if not isinstance(raw, list):
+            return []
+        out: list[dict[str, Any]] = []
+        for item in raw[:3]:
+            if isinstance(item, str) and item.strip():
+                out.append({"path": item.strip(), "name": "", "type": "file"})
+            elif isinstance(item, dict) and item.get("path"):
+                out.append(
+                    {
+                        "path": str(item["path"]).strip(),
+                        "name": str(item.get("name") or ""),
+                        "type": str(item.get("type") or "image"),
+                    }
+                )
+        return out
+
+    def _with_attachments(text: str, atts: list[dict[str, Any]]) -> str:
+        if not atts:
+            return text
+        lines = [f"- {a['path']}（{a.get('type') or '文件'}）" for a in atts]
+        return text + "\n\n[附件（都在 workspace 下）]\n" + "\n".join(lines)
+
     def chat(req: Request, params: dict[str, str]) -> Response:
         body = req.json()
         message = body.get("message")
         if not isinstance(message, str) or not message.strip():
             raise AppError("message 不能为空")
         session = _prepare_session(body)
+        atts = _attachments(body)
         max_turns = body.get("max_turns")
         ctx = ToolContext(session=session, agent_id="main", depth=0, allow_spawn=True)
         agent = Agent(runtime, session, ctx, max_turns=int(max_turns) if max_turns else None)
-        result = agent.run(message)
+        result = agent.run(_with_attachments(message, atts), attachments=atts)
         return json_response(
             {
                 "session_id": session.id,
@@ -115,6 +140,7 @@ def build_router(runtime: Any) -> Router:
         if not isinstance(message, str) or not message.strip():
             raise AppError("message 不能为空")
         session = _prepare_session(body)
+        atts = _attachments(body)
         max_turns = body.get("max_turns")
         ctx = ToolContext(session=session, agent_id="main", depth=0, allow_spawn=True)
         agent = Agent(runtime, session, ctx, max_turns=int(max_turns) if max_turns else None)
@@ -124,7 +150,7 @@ def build_router(runtime: Any) -> Router:
 
         def worker() -> None:
             try:
-                result = agent.run(message, emit=events.put)
+                result = agent.run(_with_attachments(message, atts), emit=events.put, attachments=atts)
                 events.put(
                     {"type": "final", "session_id": session.id, "content": result.content, "turns": result.turns}
                 )

@@ -18,6 +18,18 @@ _CONTENT_TYPES = {
     "chat.js": "application/javascript; charset=utf-8",
     "providers.js": "application/javascript; charset=utf-8",
     "settings.js": "application/javascript; charset=utf-8",
+    "canvas.js": "application/javascript; charset=utf-8",
+}
+
+_MIME = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
 }
 
 
@@ -57,5 +69,37 @@ def mount(router) -> None:
     router.add("GET", "/ui/chat.js", make("chat.js"), auth=False)
     router.add("GET", "/ui/providers.js", make("providers.js"), auth=False)
     router.add("GET", "/ui/settings.js", make("settings.js"), auth=False)
+    router.add("GET", "/ui/canvas.js", make("canvas.js"), auth=False)
+
+    def media_file(subdir: str):
+        """只放行 workspace/<subdir>/<文件名>，不让目录穿越。"""
+        import re as _re
+
+        def handler(req, params):
+            from .config import settings as _settings
+
+            name = str(params.get("name") or "")
+            if not _re.fullmatch(r"[A-Za-z0-9._-]{1,120}", name):
+                return Response(404, {"ok": False, "error": "文件名不合法"})
+            sandbox = Path(_settings.sandbox_root).resolve()
+            target = (sandbox / subdir / name).resolve()
+            try:
+                target.relative_to(sandbox)
+            except ValueError:
+                return Response(404, {"ok": False, "error": "路径越界"})
+            if not target.is_file():
+                return Response(404, {"ok": False, "error": "文件不存在"})
+            content_type = _MIME.get(target.suffix.lower(), "application/octet-stream")
+            return Response(
+                200,
+                target.read_bytes(),
+                headers={"Cache-Control": "no-cache"},
+                content_type=content_type,
+            )
+
+        return handler
+
+    router.add("GET", "/files/media/{name}", media_file("media"), auth=False)
+    router.add("GET", "/files/uploads/{name}", media_file("uploads"), auth=False)
     router.add("GET", "/favicon.ico", lambda req, params: Response(204), auth=False)
     mount_api(router)
