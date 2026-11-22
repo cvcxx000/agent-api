@@ -62,6 +62,8 @@ class Agent:
         self.messages = session.messages
         self.max_turns = max_turns or session.max_turns or self.settings.max_turns
         self.cancel_event = cancel_event
+        self._emit_sink: Emit | None = None
+        self._warned_vision = False
         try:
             self.vision = bool(provider_store.active_meta(self.settings).get("vision"))
         except Exception:  # noqa: BLE001 - 读不到就按不支持图片处理
@@ -80,8 +82,23 @@ class Agent:
             logger.debug("事件发送失败", exc_info=True)
 
     def _parts_for(self, message: dict[str, Any]) -> Any:
-        """用户消息如果带附件，且当前提供商开了「支持图片输入」，就发多模态内容块。"""
+        """用户消息带附件时：模型能吃图就发多模态内容块，不能就明确告知（不再静默丢弃）。"""
         attachments = message.get("attachments") or []
+        if attachments and not self.vision:
+            if not self._warned_vision:
+                self._warned_vision = True
+                self._emit(
+                    self._emit_sink,
+                    {
+                        "type": "warning",
+                        "message": "附件没有发出去：当前模型被判定为不支持看图（vision 关）。"
+                        "在「提供商 → 视觉」里打开，或换 gpt-4o / *-vl / gemini 这类模型。",
+                    },
+                )
+            return (
+                str(message.get("content") or "")
+                + "\n\n[附件没能发给模型：当前模型不支持图片输入，只能当文件路径给我]"
+            )
         if self.vision and attachments:
             parts: list[dict[str, Any]] = [{"type": "text", "text": str(message.get("content") or "")}]
             for item in attachments[:3]:
@@ -134,6 +151,7 @@ class Agent:
         return self.runtime.llm.stream_chat(payload, tools=tools, on_event=forward)
 
     def run(self, user_text: str, emit: Emit | None = None, attachments: list[dict[str, Any]] | None = None) -> AgentResult:
+        self._emit_sink = emit
         steps: list[dict[str, Any]] = []
         user_message: dict[str, Any] = {"role": "user", "content": user_text}
         if attachments:
