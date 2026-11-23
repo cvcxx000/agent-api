@@ -142,6 +142,7 @@ check("cookie header", "a=1" in body.get("cookie_header", ""), str(body)[:200])
 status, body = jcall("GET", "/api/skills")
 names = [s["name"] for s in body.get("skills", [])]
 check("skills scanned", "data-report" in names, str(names))
+check("port=0 用随机端口（服务已在 8000 也照样能自检）", PORT > 0 and PORT != runtime.settings.port, f"PORT={PORT}")
 
 status, body = jcall("POST", "/api/chat", {"message": "自检：跑一下环境", "title": "smoke"})
 step_names = [s.get("name") for s in body.get("steps", []) if s.get("type") == "tool"]

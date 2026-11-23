@@ -192,6 +192,8 @@ python3 scripts/tui.py --base http://127.0.0.1:8000 --token 你的TOKEN
 | 命令 | 作用 |
 | --- | --- |
 | `/model` | 列真实模型挑编号，立即切换 |
+| `/login 邮箱 密码` | 终端里直接登录（账号开了两步验证就再加 6 位码）；Cookie 存 `~/.agent-api-tui.json`，下次启动自动带上 |
+| `/logout` | 退出登录，清掉本地 Cookie |
 | `/whoami` | 看现在用的是哪个账号 / 密钥身份 |
 | `/say 文字` | 合成语音（TTS），打印音频地址；Agent 自己念的话终端里显示 `语音：<地址>` |
 | `/cron` | 列出定时任务，输编号立刻跑一次；`/cron on|off 编号` 开关，`/cron del 编号` 删除 |
@@ -699,7 +701,9 @@ agent-api/
 python3 scripts/smoke_test.py
 ```
 
-临时沙箱里跑一遍：账号体系（注册 / 登录 / 密钥 / 恢复码重置 / 身份验证器 / 锁定）、鉴权、文件读写、路径逃逸、Python 执行与超时、Cookie、Skill 扫描、Mock 对话、运行时改提示词、载入 Skill、3 子 Agent 并发 + 第 4 个拒绝、工作流、SSE 与思考流、提供商目录/拉模型/切换/清理、搜索与图片视频配置、上传、Markdown 预览越界、全部前端静态资源。
+临时沙箱里跑一遍：账号体系（注册 / 登录 / 密钥 / 恢复码重置 / 身份验证器 / 锁定）、鉴权、文件读写、路径逃逸、Python 执行与超时、Cookie、Skill 扫描、Mock 对话、运行时改提示词、载入 Skill、3 子 Agent 并发 + 第 4 个拒绝、工作流、SSE 与思考流、token 用量与缓存命中、PDF/Word 抽字与页面渲染、提供商目录/拉模型/切换/清理、搜索与图片视频配置、上传、Markdown 预览越界、全部前端静态资源。
+
+它自己用随机端口，**正在 8000 跑着服务也能直接跑**（以前会把 `port=0` 当成 8000，直接撞出 `Errno 98 Address already in use`）。
 
 ---
 

@@ -9,6 +9,8 @@
     /new             新会话
     /model           选提供商和模型（列表里挑编号，立即生效）
     /providers       列出提供商与模型
+    /login 邮箱 密码   终端里直接登录（开了两步验证再加 6 位码）
+    /logout          退出登录
     /whoami          看当前身份（账号 / 密钥）
   /skills          列出所有技能（SKILL.md）
     /skill 名字       把技能载入当前会话
@@ -67,30 +69,77 @@ MAGENTA = "35"
 BOLD = "1"
 
 
+_SESSION_FILE = Path.home() / ".agent-api-tui.json"
+
+
+def load_cookie(base: str) -> str:
+    try:
+        data = json.loads(_SESSION_FILE.read_text(encoding="utf-8"))
+        return str((data.get(base) or {}).get("cookie") or "")
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return ""
+
+
+def save_cookie(base: str, cookie: str) -> None:
+    try:
+        data = {}
+        if _SESSION_FILE.exists():
+            data = json.loads(_SESSION_FILE.read_text(encoding="utf-8"))
+        if cookie:
+            data[base] = {"cookie": cookie}
+        else:
+            data.pop(base, None)
+        _SESSION_FILE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        _SESSION_FILE.chmod(0o600)
+    except (OSError, json.JSONDecodeError):
+        pass
+
+
 class Api:
     def __init__(self, base: str, token: str):
         self.base = base.rstrip("/")
         self.token = token
+        self.cookie = load_cookie(self.base)
 
     def headers(self) -> dict[str, str]:
         head = {"Content-Type": "application/json"}
         if self.token:
             head["X-API-Token"] = self.token
+        if self.cookie:
+            head["Cookie"] = self.cookie
         return head
+
+    def absorb_cookie(self, headers: object) -> None:
+        """把登录响应的 Set-Cookie 记下来，顺手落盘给下次启动用。"""
+        try:
+            raw_list = headers.get_all("Set-Cookie") if hasattr(headers, "get_all") else []
+        except Exception:  # noqa: BLE001
+            raw_list = []
+        for raw in raw_list or []:
+            piece = str(raw).split(";")[0].strip()
+            if not piece.startswith("agent_auth="):
+                continue
+            value = piece.split("=", 1)[1].strip()
+            if value:
+                self.cookie = "agent_auth=" + value
+                save_cookie(self.base, self.cookie)
+            else:
+                self.cookie = ""
+                save_cookie(self.base, "")
 
     def _auth_hint(self, code: int) -> str:
         if code != 401:
             return ""
         return ("这是没登录/没凭证。\n"
-                "  · 网页：浏览器打开 /login 登录一次；\n"
-                "  · 终端：在「设置 → 账号与安全 → API 密钥」生成 ak_…，然后 "
-                "python3 scripts/tui.py --token ak_xxx\n"
-                "  · 或者在服务端 .env 里设 API_TOKEN，用 --token 你的API_TOKEN")
+                "  · 终端直接登录：/login 你的邮箱 你的密码（开了两步验证再补 6 位码）\n"
+                "  · 或用 API 密钥：设置 → 账号与安全 → 生成 ak_…，然后 python3 scripts/tui.py --token ak_xxx\n"
+                "  · 网页那边浏览器打开 /login 也能登")
 
     def get(self, path: str) -> dict:
         req = urllib.request.Request(self.base + enc_path(path), headers=self.headers())
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
+                self.absorb_cookie(resp.headers)
                 return json.loads(resp.read().decode("utf-8") or "{}")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:400]
@@ -104,6 +153,7 @@ class Api:
         req = urllib.request.Request(self.base + enc_path(path), method="DELETE", headers=self.headers())
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:
+                self.absorb_cookie(resp.headers)
                 return json.loads(resp.read().decode("utf-8") or "{}")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:400]
@@ -118,6 +168,7 @@ class Api:
         req = urllib.request.Request(self.base + enc_path(path), data=data, method="POST", headers=self.headers())
         try:
             with urllib.request.urlopen(req, timeout=600) as resp:
+                self.absorb_cookie(resp.headers)
                 return json.loads(resp.read().decode("utf-8") or "{}")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:400]
@@ -413,6 +464,8 @@ COMMANDS = [
     ("/help", "命令列表"),
     ("/model", "选模型（真实列表，编号即切）"),
     ("/providers", "看提供商与模型"),
+    ("/login", "登录：/login 邮箱 密码 [6位码]"),
+    ("/logout", "退出登录"),
     ("/whoami", "看当前账号 / 身份来源"),
     ("/skills", "列出所有技能"),
     ("/skill", "载入技能：/skill 名字"),
@@ -473,6 +526,46 @@ def print_cmds():
     print(c(DIM, "命令（打 / 看清单，Tab 补全）："))
     for k, d in COMMANDS:
         print("  " + c(CYAN, k.ljust(11)) + c(DIM, d))
+
+
+def cmd_login(api: Api, state: dict, arg: str) -> None:
+    parts = arg.split()
+    if len(parts) < 2:
+        print(c(RED, "用法：/login 邮箱 密码 [6 位动态码]"))
+        return
+    email, password = parts[0], parts[1]
+    code = parts[2] if len(parts) > 2 else ""
+    try:
+        res = api.post("/api/auth/login", {"email": email, "password": password})
+    except RuntimeError as exc:
+        print(c(RED, str(exc)))
+        return
+    if res.get("totp_required"):
+        if not code:
+            print(c(CYAN, "这个账号开了两步验证：再执行 /login 邮箱 密码 6位码"))
+            return
+        try:
+            res = api.post("/api/auth/login/totp", {"ticket": res.get("ticket"), "code": code})
+        except RuntimeError as exc:
+            print(c(RED, str(exc)))
+            return
+    user = res.get("user") or {}
+    if not api.cookie:
+        print(c(RED, "登录成功了但没收到 Cookie：服务端可能根本没开账号体系（AUTH_MODE=off）"))
+        return
+    print(c(GREEN, "已登录：") + str(user.get("email") or email) + c(DIM, "（Cookie 已存到 ~/.agent-api-tui.json，下次启动不用再登）"))
+    if res.get("recovery_code"):
+        print(c(MAGENTA, "恢复码（只显示这一次）：") + str(res["recovery_code"]))
+
+
+def cmd_logout(api: Api) -> None:
+    try:
+        api.post("/api/auth/logout", {})
+    except (RuntimeError, SystemExit):
+        pass
+    api.cookie = ""
+    save_cookie(api.base, "")
+    print(c(DIM, "已退出登录。"))
 
 
 def cmd_whoami(api):
@@ -768,6 +861,12 @@ def main() -> None:
             continue
         if line == "/skill":
             print(c(RED, "用法：/skill 名字（先 /skills 看列表）"))
+            continue
+        if line == "/login" or line.startswith("/login "):
+            cmd_login(api, state, line[len("/login"):].strip())
+            continue
+        if line == "/logout":
+            cmd_logout(api)
             continue
         if line == "/whoami":
             cmd_whoami(api)

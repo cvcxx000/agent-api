@@ -247,7 +247,9 @@ def build_server(runtime: Any, host: str | None = None, port: int | None = None)
 
     router = build_router(runtime)
     mount_webui(router)
-    return AgentHTTPServer((host or settings.host, port or settings.port), router, runtime)
+    host = settings.host if host is None else host
+    port = settings.port if port is None else port
+    return AgentHTTPServer((host, port), router, runtime)
 
 
 def serve(runtime: Any, host: str | None = None, port: int | None = None) -> None:
