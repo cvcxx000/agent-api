@@ -150,6 +150,7 @@ def build_router(runtime: Any) -> Router:
                 "message_count": len(session.messages),
                 "subagents_active": runtime.subagents.active_count,
                 "subagents_max": runtime.subagents.max_concurrent,
+                "usage": session.usage,
             }
         )
 
@@ -171,7 +172,13 @@ def build_router(runtime: Any) -> Router:
             try:
                 result = agent.run(_with_attachments(message, atts), emit=events.put, attachments=atts)
                 events.put(
-                    {"type": "final", "session_id": session.id, "content": result.content, "turns": result.turns}
+                    {
+                        "type": "final",
+                        "session_id": session.id,
+                        "content": result.content,
+                        "turns": result.turns,
+                        "usage": dict(session.usage),
+                    }
                 )
             except AppError as exc:
                 events.put({"type": "error", "message": exc.message})
@@ -213,7 +220,14 @@ def build_router(runtime: Any) -> Router:
     def session_messages(req: Request, params: dict[str, str]) -> Response:
         session = runtime.sessions.get(params["session_id"])
         limit = req.q_int("limit", 200, lo=1, hi=2000)
-        return json_response({"session_id": session.id, "count": len(session.messages), "messages": session.messages[-limit:]})
+        return json_response(
+            {
+                "session_id": session.id,
+                "count": len(session.messages),
+                "messages": session.messages[-limit:],
+                "usage": session.usage,
+            }
+        )
 
     def session_prompt(req: Request, params: dict[str, str]) -> Response:
         body = req.json()

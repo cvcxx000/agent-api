@@ -24,6 +24,41 @@ logger = logging.getLogger("agent.llm")
 _RETRY_STATUS = {429, 500, 502, 503, 504}
 
 
+def stream_usage_enabled() -> bool:
+    """是否在流式请求里带 stream_options.include_usage（拿得到 token 用量和缓存命中）。"""
+    return (os.getenv("LLM_STREAM_USAGE") or "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def extract_usage(data: dict[str, Any]) -> dict[str, int]:
+    """把各家 OpenAI 兼容服务的 usage 归一：提示 / 生成 / 缓存命中。"""
+    usage = data.get("usage") if isinstance(data, dict) else None
+    if not isinstance(usage, dict) or not usage:
+        return {}
+    prompt = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
+    completion = usage.get("completion_tokens") or usage.get("output_tokens") or 0
+    details = usage.get("prompt_tokens_details") or {}
+    cached = 0
+    if isinstance(details, dict):
+        cached = details.get("cached_tokens") or 0
+    cached = (
+        cached
+        or usage.get("cached_tokens")
+        or usage.get("prompt_cache_hit_tokens")
+        or usage.get("cache_read_input_tokens")
+        or 0
+    )
+    total = usage.get("total_tokens") or (prompt + completion)
+    try:
+        return {
+            "prompt": int(prompt or 0),
+            "completion": int(completion or 0),
+            "cached": int(cached or 0),
+            "total": int(total or 0),
+        }
+    except (TypeError, ValueError):
+        return {}
+
+
 class StreamAborted(Exception):
     """上游流式连接中途断开（Errno 103 / RST 之类），且还没吐出任何内容。"""
 
@@ -201,6 +236,8 @@ class OpenAICompatibleLLM(BaseLLM):
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+        if stream_usage_enabled():
+            payload["stream_options"] = {"include_usage": True}
 
         url = f"{self.settings.llm_base_url}/chat/completions"
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -228,6 +265,10 @@ class OpenAICompatibleLLM(BaseLLM):
                 except Exception:  # noqa: BLE001
                     pass
                 last_error = f"HTTP {exc.code}：{detail}"
+                if exc.code in (400, 422) and payload.pop("stream_options", None) is not None:
+                    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                    logger.info("服务端不认 stream_options，去掉后重试：%s", detail[:120])
+                    continue
                 if exc.code not in _RETRY_STATUS:
                     break
                 if exc.code == 429:
@@ -260,6 +301,7 @@ class OpenAICompatibleLLM(BaseLLM):
         reason_parts: list[str] = []
         calls: dict[int, dict[str, Any]] = {}
         aborted = {"hit": False}
+        usage_box: list[dict[str, int]] = [{}]
 
         def safe_lines(stream: Any) -> Any:
             try:
@@ -290,6 +332,9 @@ class OpenAICompatibleLLM(BaseLLM):
                 continue
             if not isinstance(chunk, dict):
                 continue
+            found = extract_usage(chunk)
+            if found:
+                usage_box[0] = found
             error = chunk.get("error")
             if isinstance(error, dict) and error:
                 raise LLMError(f"模型返回错误：{error.get('message') or json.dumps(error, ensure_ascii=False)[:300]}")
@@ -363,6 +408,8 @@ class OpenAICompatibleLLM(BaseLLM):
             )
         if normalized:
             message["tool_calls"] = normalized
+        if usage_box[0]:
+            message["usage"] = usage_box[0]
         return message
 
     @staticmethod
@@ -398,11 +445,26 @@ class OpenAICompatibleLLM(BaseLLM):
             message["tool_calls"] = normalized
         else:
             message.pop("tool_calls", None)
+        usage = extract_usage(data)
+        if usage:
+            message["usage"] = usage
         return message
 
 
 class MockLLM(BaseLLM):
     """没有 API Key 时的离线替身：真实走一次 run_python，用来验证工具闭环。"""
+
+    @staticmethod
+    def _fake_usage(messages: list[dict[str, Any]], content: str) -> dict[str, int]:
+        chars = sum(len(str(m.get("content") or "")) for m in messages)
+        prompt = max(1, chars // 4)
+        completion = max(1, len(content or "") // 4)
+        return {
+            "prompt": prompt,
+            "completion": completion,
+            "cached": int(prompt * 0.6),
+            "total": prompt + completion,
+        }
 
     def chat(
         self,
@@ -414,9 +476,11 @@ class MockLLM(BaseLLM):
         has_tool_result = any(m.get("role") == "tool" for m in messages)
         tool_names = {t.get("function", {}).get("name") for t in (tools or [])}
         if not has_tool_result and "run_python" in tool_names:
+            content = "（Mock 模式）先用工具跑一段 Python 验证环境。"
             return {
                 "role": "assistant",
-                "content": "（Mock 模式）先用工具跑一段 Python 验证环境。",
+                "content": content,
+                "usage": self._fake_usage(messages, content),
                 "tool_calls": [
                     {
                         "id": new_id("call"),
@@ -433,7 +497,8 @@ class MockLLM(BaseLLM):
             if msg.get("role") == "user":
                 last_user = str(msg.get("content") or "")
                 break
-        return {"role": "assistant", "content": f"（Mock 模式，未配置 LLM_API_KEY）已收到任务：{last_user[:200]}"}
+        content = f"（Mock 模式，未配置 LLM_API_KEY）已收到任务：{last_user[:200]}"
+        return {"role": "assistant", "content": content, "usage": self._fake_usage(messages, content)}
 
     def stream_chat(
         self,
@@ -454,6 +519,7 @@ class MockLLM(BaseLLM):
                 on_event({"type": "content_delta", "text": content[i:i + step]})
                 time.sleep(0.01)
         message["reasoning"] = reason
+        message["usage"] = self._fake_usage(messages, content)
         return message
 
 

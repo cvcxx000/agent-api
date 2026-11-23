@@ -31,7 +31,7 @@ os.environ["SKILLS_DIRS"] = str(ROOT / "skills")
 
 from agent_api import api as api_mod  # noqa: E402
 from agent_api.auth import totp_code, totp_next_code  # noqa: E402
-from agent_api.llm import OpenAICompatibleLLM, StreamAborted  # noqa: E402
+from agent_api.llm import OpenAICompatibleLLM, StreamAborted, extract_usage  # noqa: E402
 from agent_api.runtime import create_runtime  # noqa: E402
 from agent_api.server import build_server  # noqa: E402
 
@@ -177,6 +177,98 @@ check("workflow run", bool(body.get("outputs", {}).get("stats")), json.dumps(bod
 status, raw = call("POST", "/api/chat/stream", {"message": "流式自检", "session_id": session_id}, timeout=60)
 check("chat stream", status == 200 and "event: end" in raw and "event: final" in raw, raw[:300])
 check("chat stream thinking", "event: reasoning_delta" in raw, raw[:300])
+
+# ---- token 用量 / 缓存命中率 ----
+check("流里带 usage 事件", "event: usage" in raw and '"cached"' in raw, raw[-400:])
+check("final 带 usage", '"final"' in raw and '"usage"' in raw, raw[-300:])
+status, body = jcall("POST", "/api/chat", {"message": "用量自检：再说一句"})
+usage = body.get("usage") or {}
+check(
+    "接口返回累计 token 用量（含缓存命中）",
+    status == 200 and usage.get("prompt", 0) > 0 and usage.get("cached", 0) > 0 and usage.get("calls", 0) >= 2,
+    str(usage),
+)
+status, body = jcall("GET", f"/api/sessions/{session_id}/messages?limit=10")
+check(
+    "会话详情带 usage（切会话也能显示）",
+    (body.get("usage") or {}).get("prompt", 0) > 0,
+    str(body.get("usage"))[:200],
+)
+check(
+    "用量归一：OpenAI 的 cached_tokens",
+    extract_usage({"usage": {"prompt_tokens": 100, "completion_tokens": 20, "prompt_tokens_details": {"cached_tokens": 80}}})
+    == {"prompt": 100, "completion": 20, "cached": 80, "total": 120},
+)
+check(
+    "用量归一：DeepSeek 的 prompt_cache_hit_tokens",
+    extract_usage({"usage": {"prompt_tokens": 90, "completion_tokens": 10, "prompt_cache_hit_tokens": 70}})["cached"] == 70,
+)
+check(
+    "用量归一：Anthropic 口径 input/output + cache_read_input_tokens",
+    extract_usage({"usage": {"input_tokens": 50, "output_tokens": 5, "cache_read_input_tokens": 40}})
+    == {"prompt": 50, "completion": 5, "cached": 40, "total": 55},
+)
+check("用量归一：服务不返回 usage 时给空", extract_usage({"usage": {}}) == {})
+
+# 真实世界里有些服务不认 stream_options：要自动去掉重试，而不是整轮报 400
+from dataclasses import replace  # noqa: E402
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer  # noqa: E402
+
+_seen = []
+
+
+class _Provider(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
+        _seen.append(bool(payload.get("stream_options")))
+        if payload.get("stream_options"):
+            body = b'{"error":{"message":"unrecognized_keys: stream_options"}}'
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        body = b"".join(
+            b'data: {"choices":[{"delta":{"content":"' + piece.encode() + b'"}}]}\n\n' for piece in ("好", "的")
+        ) + b"data: [DONE]\n\n"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+_provider = ThreadingHTTPServer(("127.0.0.1", 0), _Provider)
+threading.Thread(target=_provider.serve_forever, daemon=True).start()
+_cfg = replace(
+    runtime.settings,
+    llm_base_url=f"http://127.0.0.1:{_provider.server_address[1]}/v1",
+    llm_api_key="x",
+    llm_model="m",
+)
+_llm = OpenAICompatibleLLM(_cfg, 0)
+_opts = {"LLM_STREAM_USAGE": "1"}
+_old = os.environ.get("LLM_STREAM_USAGE")
+os.environ.update(_opts)
+try:
+    _msg = _llm.stream_chat([{"role": "user", "content": "hi"}])
+finally:
+    if _old is None:
+        os.environ.pop("LLM_STREAM_USAGE", None)
+    else:
+        os.environ["LLM_STREAM_USAGE"] = _old
+    _provider.shutdown()
+check(
+    "服务不认 stream_options 时自动去掉重试（不 400 死）",
+    _msg.get("content") == "好的" and _seen == [True, False],
+    f"{_msg.get('content')!r} {_seen}",
+)
 
 # ---- 提供商：目录 / 空种 / 自定义模型 / 切换 / 清理空壳 ----
 # ---------------- TTS ----------------

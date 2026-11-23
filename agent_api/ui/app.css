@@ -462,6 +462,8 @@ footer{
   font-size:10.5px; color:var(--ink-3);
 }
 #sid{font-family:var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+#usage{font-family:var(--mono); white-space:nowrap; cursor:default}
+#usage.hot{color:#2f9e56}
 
 @media (max-width:520px){
   #log{padding:14px 12px 8px}

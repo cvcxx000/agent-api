@@ -196,6 +196,8 @@ function handleEvent(ev){
     if (ev.name === 'spawn_agent' || ev.name === 'wait_agent'){ refreshSubBadge(); }
   } else if (type === 'warning'){
     note(ev.message || '');
+  } else if (type === 'usage'){
+    showUsage(ev.usage);
   } else if (type === 'error'){
     note('错误：' + (ev.message || ''), 'err');
   } else if (type === 'end'){
@@ -210,6 +212,7 @@ function handleEvent(ev){
       sessionId = ev.session_id;
       localStorage.setItem(LS.session, sessionId);
     }
+    showUsage(ev.usage);
     note('完成 · ' + (ev.turns || 0) + ' 轮');
     showSession();
   }
@@ -289,6 +292,7 @@ $('inpToken').value = localStorage.getItem(LS.token) || '';
 $('inpSystem').value = localStorage.getItem(LS.system) || '';
 $('inpTurns').value = localStorage.getItem(LS.turns) || '';
 showSession();
+refreshUsage();
 refreshStatus();
 refreshProviderSummary();
 refreshSubBadge();

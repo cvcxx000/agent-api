@@ -49,6 +49,7 @@ class Session:
     updated_at: str = ""
     max_turns: int | None = None
     persist: bool = True
+    usage: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self, include_messages: bool = True) -> dict[str, Any]:
         data = {
@@ -63,6 +64,7 @@ class Session:
             "updated_at": self.updated_at,
             "max_turns": self.max_turns,
             "message_count": len(self.messages),
+            "usage": self.usage,
         }
         if include_messages:
             data["messages"] = self.messages
@@ -81,6 +83,7 @@ class Session:
             created_at=data.get("created_at", ""),
             updated_at=data.get("updated_at", ""),
             max_turns=data.get("max_turns"),
+            usage=data.get("usage") or {},
             persist=data.get("persist", True),
         )
 

@@ -184,6 +184,35 @@ function note(text, cls){
 function showSession(){
   $('sid').textContent = 'session: ' + (sessionId ? sessionId : '新建');
 }
+
+let lastUsage = null;
+
+function fmtTokens(n){
+  const v = Number(n || 0);
+  if (v >= 10000){ return (v / 10000).toFixed(1) + '万'; }
+  if (v >= 1000){ return (v / 1000).toFixed(1) + 'k'; }
+  return String(Math.round(v));
+}
+
+function showUsage(u){
+  if (u !== undefined){ lastUsage = u || {}; }
+  const el = $('usage');
+  if (!el){ return; }
+  const box = lastUsage || {};
+  const prompt = Number(box.prompt || 0);
+  const cached = Number(box.cached || 0);
+  if (!prompt){
+    el.textContent = '缓存 —';
+    el.title = '这个模型/服务没返回 token 用量，算不出命中率';
+    el.classList.remove('hot');
+    return;
+  }
+  const rate = Math.round((cached / prompt) * 100);
+  el.textContent = '缓存 ' + rate + '% · ' + fmtTokens(cached) + '/' + fmtTokens(prompt);
+  el.title = '本会话累计：提示 ' + prompt + ' tokens，命中缓存 ' + cached + '，生成 ' + Number(box.completion || 0) +
+    '，模型调用 ' + Number(box.calls || 0) + ' 次';
+  el.classList.toggle('hot', rate >= 50);
+}
 function addUser(text, attachments){
   const d = document.createElement('div');
   d.className = 'msg user';

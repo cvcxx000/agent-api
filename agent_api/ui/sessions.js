@@ -83,7 +83,16 @@ function startNew(){
   curBot = null;
   curRaw = '';
   showSession();
+  showUsage({});
   note('已开新会话，下一句会建一个新 session。');
+}
+
+async function refreshUsage(){
+  if (!sessionId){ return; }
+  try{
+    const j = await apiGet('/api/sessions/' + encodeURIComponent(sessionId) + '/messages?limit=1');
+    showUsage(j.usage);
+  }catch(e){ }
 }
 
 async function ensureSession(){

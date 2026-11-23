@@ -157,6 +157,21 @@ class Agent:
 
         return self.runtime.llm.stream_chat(payload, tools=tools, on_event=forward)
 
+    def _record_usage(self, message: dict[str, Any], emit: Emit | None, turn: int) -> None:
+        usage = message.get("usage")
+        if not isinstance(usage, dict) or not usage:
+            return
+        box = self.session.usage
+        prompt = int(usage.get("prompt") or 0)
+        completion = int(usage.get("completion") or 0)
+        cached = int(usage.get("cached") or 0)
+        box["prompt"] = int(box.get("prompt") or 0) + prompt
+        box["completion"] = int(box.get("completion") or 0) + completion
+        box["cached"] = int(box.get("cached") or 0) + max(0, min(cached, prompt))
+        box["total"] = int(box.get("total") or 0) + int(usage.get("total") or (prompt + completion))
+        box["calls"] = int(box.get("calls") or 0) + 1
+        self._emit(emit, {"type": "usage", "turn": turn, "usage": dict(box)})
+
     def run(self, user_text: str, emit: Emit | None = None, attachments: list[dict[str, Any]] | None = None) -> AgentResult:
         self._emit_sink = emit
         steps: list[dict[str, Any]] = []
@@ -177,6 +192,7 @@ class Agent:
             except LLMError as exc:
                 self._emit(emit, {"type": "error", "message": exc.message})
                 raise
+            self._record_usage(message, emit, turns)
 
             content = message.get("content") or ""
             reasoning = str(message.get("reasoning") or "")
