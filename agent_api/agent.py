@@ -92,23 +92,30 @@ class Agent:
             return raw_content
         attachments = message.get("attachments") or []
         if attachments and not self.vision:
-            if not self._warned_vision:
+            doc_pages = [
+                a for a in attachments if isinstance(a, dict) and str(a.get("type") or "") == "docpage"
+            ]
+            user_images = [
+                a for a in attachments if not (isinstance(a, dict) and str(a.get("type") or "") == "docpage")
+            ]
+            if user_images and not self._warned_vision:
                 self._warned_vision = True
                 self._emit(
                     self._emit_sink,
                     {
                         "type": "warning",
-                        "message": "附件没有发出去：当前模型被判定为不支持看图（vision 关）。"
+                        "message": "图片附件没有发出去：当前模型被判定为不支持看图（vision 关）。"
                         "在「提供商 → 视觉」里打开，或换 gpt-4o / *-vl / gemini 这类模型。",
                     },
                 )
-            return (
-                str(message.get("content") or "")
-                + "\n\n[附件没能发给模型：当前模型不支持图片输入，只能当文件路径给我]"
-            )
+            if doc_pages and not user_images:
+                tail = "\n\n[文档页面图没能挂上：当前模型不支持图片输入，这次只发了文字]"
+            else:
+                tail = "\n\n[附件没能发给模型：当前模型不支持图片输入，只能当文件路径给我]"
+            return str(message.get("content") or "") + tail
         if self.vision and attachments:
             parts: list[dict[str, Any]] = [{"type": "text", "text": str(message.get("content") or "")}]
-            for item in attachments[:3]:
+            for item in attachments[:8]:
                 rel = str(item.get("path") if isinstance(item, dict) else item or "")
                 if not rel:
                     continue

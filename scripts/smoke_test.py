@@ -29,7 +29,11 @@ os.environ["DATA_DIR"] = str(SMOKE / "data")
 os.environ["WORKFLOWS_DIR"] = str(ROOT / "workflows")
 os.environ["SKILLS_DIRS"] = str(ROOT / "skills")
 
+import base64  # noqa: E402
+import zipfile  # noqa: E402
+
 from agent_api import api as api_mod  # noqa: E402
+from agent_api import documents as docs_mod  # noqa: E402
 from agent_api.auth import totp_code, totp_next_code  # noqa: E402
 from agent_api.llm import OpenAICompatibleLLM, StreamAborted, extract_usage  # noqa: E402
 from agent_api.runtime import create_runtime  # noqa: E402
@@ -274,6 +278,156 @@ check(
     "服务不认 stream_options 时自动去掉重试（不 400 死）",
     _msg.get("content") == "好的" and _seen == [True, False],
     f"{_msg.get('content')!r} {_seen}",
+)
+
+# ---------------- PDF / Word：抽文字 + 分页渲染 ----------------
+def _make_pdf(path, text):
+    stream = f"BT /F1 24 Tf 72 720 Td ({text}) Tj ET".encode()
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        f"<< /Length {len(stream)} >>\nstream\n".encode() + stream + b"\nendstream",
+    ]
+    data = b"%PDF-1.4\n"
+    offsets = []
+    for i, obj in enumerate(objs, 1):
+        offsets.append(len(data))
+        data += f"{i} 0 obj\n".encode() + obj + b"\nendobj\n"
+    xref = len(data)
+    data += f"xref\n0 {len(objs) + 1}\n".encode() + b"0000000000 65535 f \n"
+    for off in offsets:
+        data += f"{off:010d} 00000 n \n".encode()
+    data += f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    path.write_bytes(data)
+
+
+def _make_docx(path, lines):
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?><document xmlns="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><body>'
+        + "".join(f"<p><r><t>{one}</t></r></p>" for one in lines)
+        + "</body></document>"
+    )
+    ct = (
+        '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+        "</Types>"
+    )
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("[Content_Types].xml", ct)
+        zf.writestr("word/document.xml", xml)
+
+
+_ws = Path(os.environ["SANDBOX_ROOT"])
+(_ws / "uploads").mkdir(parents=True, exist_ok=True)
+_pdf = _ws / "uploads" / "smoke.pdf"
+_docx = _ws / "uploads" / "smoke.docx"
+_make_pdf(_pdf, "Hello Document 42")
+_make_docx(_docx, ["合同金额 128000 元", "付款周期 30 天"])
+
+check("PDF 页数能数出来", docs_mod.page_count(_pdf) == 1, str(docs_mod.page_count(_pdf)))
+_pdf_text, _pdf_engine = docs_mod.extract_pdf_text(_pdf, 1, 1)
+check("PDF 抽得到文字", "Hello Document 42" in _pdf_text, f"{_pdf_engine}: {_pdf_text[:100]}")
+check("DOCX 抽得到文字（零依赖）", "合同金额 128000 元" in docs_mod.docx_text(_docx), docs_mod.docx_text(_docx)[:100])
+
+if docs_mod.render_engine():
+    _render = docs_mod.render_pdf(_pdf, _ws / "_docpages" / "smoke", 1, 1, 100)
+    _png_ok = bool(_render.images) and _render.images[0].read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+    check(f"PDF 按页渲染成 PNG（{_render.engine}）", _png_ok, str(_render.images[:2]))
+else:
+    check("没有渲染器时给出安装提示", True)
+
+saved = {name: getattr(docs_mod, name) for name in ("pdftoppm_bin", "mutool_bin", "gs_bin")}
+for name in saved:
+    setattr(docs_mod, name, lambda: None)
+_fallback = docs_mod.expand_attachment(_pdf, _ws / "_docpages" / "fallback", max_pages=4)
+for name, fn in saved.items():
+    setattr(docs_mod, name, fn)
+check(
+    "没装 poppler：仍给文字，并提示 pkg install poppler",
+    _fallback["images"] == [] and "Hello Document 42" in _fallback["text"] and "poppler" in _fallback["note"],
+    _fallback["note"],
+)
+
+from agent_api import providers as provider_mod  # noqa: E402
+
+_orig_meta = provider_mod.active_meta
+provider_mod.active_meta = lambda *a, **k: {"vision": True}
+try:
+    _doc_out = runtime.registry.execute("view_document", {"path": "uploads/smoke.pdf", "dpi": 96}, api_mod._ctx(runtime))
+finally:
+    provider_mod.active_meta = _orig_meta
+check(
+    "view_document：文字 + VIEW_IMAGE 行（下一轮自动挂图）",
+    "Hello Document 42" in _doc_out and "VIEW_IMAGE: " in _doc_out,
+    _doc_out[:300],
+)
+(_ws / "uploads" / "note.txt").write_text("随便一段文字", encoding="utf-8")
+
+_pages = sorted((_ws / "_docpages" / "smoke").glob("page-*.png"))
+_vision_session = runtime.sessions.create(title="vision")
+_parts = []
+if _pages:
+    _atts = [{"path": str(one.relative_to(_ws)), "name": one.name, "type": "image"} for one in _pages[:2]]
+    _msg = {"role": "user", "content": "看看这两页", "attachments": _atts}
+    provider_mod.active_meta = lambda *a, **k: {"vision": True}
+    try:
+        _agent = api_mod.Agent(runtime, _vision_session, api_mod._ctx(runtime, _vision_session))
+        _parts = _agent._parts_for(_msg)
+    finally:
+        provider_mod.active_meta = _orig_meta
+check(
+    "页面图真的进多模态 payload（不是只写在文字里）",
+    isinstance(_parts, list) and any(p.get("type") == "image_url" for p in _parts),
+    str(_parts)[:200],
+)
+_out = runtime.registry.execute("view_document", {"path": "uploads/note.txt"}, api_mod._ctx(runtime))
+check("view_document 只认文档类型", "只认 pdf" in _out, _out[:200])
+
+status, body = jcall("POST", "/api/chat", {"message": "看下这个合同", "attachments": [{"path": "uploads/smoke.docx"}]})
+_doc_session = body.get("session_id")
+status, body = jcall("GET", f"/api/sessions/{_doc_session}/messages?limit=10")
+_user_msgs = [m for m in body.get("messages") or [] if m.get("role") == "user"]
+check(
+    "附件里的 Word 自动抽文字进上下文",
+    any("合同金额 128000 元" in str(m.get("content")) for m in _user_msgs),
+    str(_user_msgs)[:300],
+)
+
+# 页面图要真的进多模态消息（不是只躺在磁盘上）
+from agent_api.agent import Agent  # noqa: E402
+from agent_api.tools.base import ToolContext  # noqa: E402
+
+provider_mod.active_meta = lambda *a, **k: {"vision": True}
+try:
+    _sess = runtime.sessions.create(title="视觉挂载自检")
+    _pngs = sorted((_ws / "_docpages" / "smoke").glob("page-*.png")) or [_ws / "uploads" / "dot.png"]
+    if _pngs and _pngs[0].exists():
+        _sess.messages.append(
+            {"role": "user", "content": "看看这几页", "attachments": [{"path": str(p.relative_to(_ws)), "type": "image"} for p in _pngs]}
+        )
+        _agent = Agent(runtime, _sess, ToolContext(session=_sess), max_turns=1)
+        _parts = _agent._parts_for(_sess.messages[-1])
+        _images = _parts if isinstance(_parts, list) else []
+        _n_img = sum(1 for one in _images if isinstance(one, dict) and one.get("type") == "image_url")
+        check("文档页面图进多模态消息（image_url）", _n_img >= 1, f"{_n_img} 张 / {len(_images)} 段")
+finally:
+    provider_mod.active_meta = _orig_meta
+
+_pdf_b64 = base64.b64encode(_pdf.read_bytes()).decode("ascii")
+status, body = jcall(
+    "POST", "/api/ui/upload", {"name": "smoke.pdf", "data_url": "data:application/pdf;base64," + _pdf_b64}
+)
+_pdf_rel = body.get("path") or ""
+check("上传接口收 PDF", status == 200 and _pdf_rel.endswith(".pdf"), str(body)[:200])
+status, body = jcall("POST", "/api/chat", {"message": "这页写了啥", "attachments": [{"path": _pdf_rel}]})
+status, body = jcall("GET", f"/api/sessions/{body.get('session_id')}/messages?limit=10")
+check(
+    "PDF 附件自动抽文字 + 渲染页图一起挂上",
+    any("Hello Document 42" in str(m.get("content")) for m in body.get("messages") or [] if m.get("role") == "user"),
+    str(body.get("messages"))[-300:],
 )
 
 # ---- 提供商：目录 / 空种 / 自定义模型 / 切换 / 清理空壳 ----

@@ -17,6 +17,7 @@
     /video 提示词     直接生成视频（异步，会等）
     /md 路径          把 workspace 里的 Markdown 渲染到终端
     /file 路径        看纯文本
+  /open 路径        挂 PDF / Word（自动抽文字 + 前几页转图）
     /see 图片路径     把本地图片发给模型看图（下一句自动带上）
     /say 文字         合成语音（TTS），给出可播放的音频地址
     /cron            看定时任务，输编号立刻跑一次；/cron off|on 编号 开关
@@ -420,6 +421,7 @@ COMMANDS = [
     ("/video", "出片：/video 海浪慢镜头"),
     ("/md", "渲染 Markdown：/md 笔记.md"),
     ("/file", "看文本：/file 路径"),
+    ("/open", "挂 PDF/Word：/open 文件路径"),
     ("/see", "发图给模型：/see 图片路径"),
     ("/say", "合成语音：/say 你好"),
     ("/cron", "定时任务：/cron 看列表，输编号跑一次"),
@@ -677,6 +679,52 @@ def cmd_see(api: Api, state: dict, path: str) -> None:
     print(c(DIM, "下一句话自动带上这张图，发完清空；最多 3 张同时挂。"))
 
 
+_DOC_MIME = {
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".doc": "application/msword",
+}
+
+
+def cmd_open(api: Api, state: dict, path: str) -> None:
+    if not path:
+        print(c(RED, "用法：/open 文档路径（pdf / docx / doc）"))
+        return
+    src = Path(path).expanduser()
+    if not src.is_absolute():
+        src = Path.cwd() / src
+    if not src.exists():
+        print(c(RED, f"找不到文件：{src}"))
+        return
+    mime = _DOC_MIME.get(src.suffix.lower())
+    if not mime:
+        print(c(RED, "只收 pdf / docx / doc；图片用 /see"))
+        return
+    raw = src.read_bytes()
+    if not raw:
+        print(c(RED, "文件是空的"))
+        return
+    if len(raw) > 12 * 1024 * 1024:
+        print(c(RED, f"文件 {len(raw) / 1024 / 1024:.1f}MB，超过 12MB（先删掉无关页或压一下）"))
+        return
+    data_url = f"data:{mime};base64," + base64.b64encode(raw).decode("ascii")
+    try:
+        res = api.post("/api/ui/upload", {"data_url": data_url, "name": src.name})
+    except (RuntimeError, SystemExit) as exc:
+        print(c(RED, str(exc)))
+        return
+    rel = str(res.get("path") or "")
+    if not rel:
+        print(c(RED, "上传失败：服务端没返回 path"))
+        return
+    pending = state.setdefault("attached", [])
+    if len(pending) >= 3:
+        pending.pop(0)
+    pending.append({"path": rel, "name": src.name, "type": "file"})
+    print(c(GREEN, f"已挂上 {src.name}（{len(raw) / 1024:.0f} KB）→ {rel}"))
+    print(c(DIM, "下一句会自动抽文字 + 把前几页转成图片给模型看；发完清空。"))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="agent-api 终端界面")
     parser.add_argument("--base", default="http://127.0.0.1:8000", help="服务地址")
@@ -769,6 +817,10 @@ def main() -> None:
             continue
         if line.startswith("/file"):
             cmd_file(api, line[len("/file"):].strip())
+            continue
+        if line.startswith("/open"):
+            cmd_open(api, state, line[len("/open"):].strip())
+            continue
             continue
         if line == "/see":
             print(c(RED, "用法：/see 图片路径"))

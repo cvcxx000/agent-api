@@ -7,6 +7,7 @@ from typing import Any
 from . import (
     agent_tools,
     cookie_tools,
+    doc_tools,
     fs_tools,
     media_tools,
     plugin_tools,
@@ -33,6 +34,7 @@ def build_registry(runtime: Any) -> ToolRegistry:
     media_tools.register(registry)
     video_tools.register(registry)
     vision_tools.register(registry)
+    doc_tools.register(registry)
     skill_tools.register(registry, lambda: runtime.skills)
     plugin_tools.register(registry, lambda: runtime.plugins)
     schedule_tools.register(registry, lambda: runtime)

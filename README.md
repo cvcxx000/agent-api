@@ -21,6 +21,8 @@
 | 能用手机上的身份验证器吗？ | 能：账号与安全里点「开始绑定」，扫二维码（或手输密钥），之后登录要密码 + 6 位动态码 |
 | 底部那个「缓存 62% · 8.1k/13.1k」是什么？ | 本会话累计的**提示 token**里有多少走了服务商的 prompt cache（省钱的那部分）。分子=命中缓存，分母=提示 token，悬停能看到生成 token 和调用次数。切会话、刷新页面都会重新算；服务不返回用量（或模型不支持）时显示「缓存 —」，不会瞎编 |
 | 网页上冒出红字 `ConnectionAbortedError: [Errno 103]`？ | 是手机息屏/切后台把连接掐了，不是代码错。现在：服务端每 10 秒发一次心跳、断流时把已收到的内容保留并标注「被截断」、模型流没吐字就断开自动重试 3 次；界面只提示一句「连接断了，再发一次」 |
+| PDF / Word 能读吗？ | 能，而且不是只抓文字：`view_document` 按页抽文字，再把页面渲染成 PNG 挂进上下文，表格、版式、印章、扫描件模型都看得见。默认看前 4 页，`pages="5-8"` 接着看，单次最多 12 页 |
+| Termux 里要装什么？ | 基础功能零依赖。想看 PDF 的页面图，装一句 `pkg install poppler`（顺带得到 `pdftotext`）；想让 Word 也整页转图，再装 `pkg install libreoffice`。不装也能读 Word 文字 |
 | 能不能出声？ | 有 TTS：`speak_text` 工具 + 网页「语音合成」+ 终端 `/say`，产物是能直接播的音频 |
 | 能不能自己按时干活？ | 有定时任务：cron 表达式到点自动跑一句话或一个工作流，网页/终端/Agent 三处都能建 |
 | 会话都是「无标题」？ | 首轮对话后按首句自动起标题（`_guess_title`），不再是清一色无标题 |
@@ -198,6 +200,7 @@ python3 scripts/tui.py --base http://127.0.0.1:8000 --token 你的TOKEN
 | `/new` | 开新会话 |
 | `/skills` | 看这个服务端有哪些 Skill |
 | `/see 路径` | 直接把一张图发给模型看（走 `view_image` 同一条通路） |
+| `/open 路径` | 挂一份 PDF / Word：自动抽文字、前几页自动转成图片，下一句一起发出去 |
 | `/image 提示词` | 生成图片 |
 | `/video 提示词` | 生成视频（提交→轮询→下载 mp4） |
 | `/search 关键词` | 走设置页配的搜索服务 |
@@ -285,7 +288,32 @@ view_image("uploads/pic.png")   # 或 /see uploads/pic.png 在终端里
 2. `_TEXT_ONLY_RE` 命中 → 纯文本（`deepseek-chat`/`reasoner`/`coder`/`v3`、`gpt-3.5`、`o3-mini`、`text-davinci`、`claude-2`、`qwen-max`、`chatglm-2/3`、`ernie-speed`/`tiny`、`command-r`、`yi-large`/`medium`）
 3. 都不命中 → 默认能看图
 
-自建别名、代理网关、没见过的模型名，一律按「能看图」放行，不再静音。想强制关就在提供商页关掉视觉开关。
+## 文档（`view_document`）
+
+PDF 和 Word 走同一条路：**先抽文字，再按页拆成图片**，两样一起进上下文。
+
+```
+view_document("uploads/合同.pdf")                 # 默认前 4 页
+view_document("uploads/合同.pdf", pages="5-8")    # 接着看下一片
+view_document("uploads/说明书.docx", dpi=150)      # 清晰度调高
+```
+
+- **PDF 文字**：有 `pdftotext` 就用它（版式保持得最好）；没有就退回内置的极简解析（解 FlateDecode + 扫 `Tj/TJ`，普通文本 PDF 够用，扫描件和复杂中文字体不保证）
+- **PDF 图片**：`pdftoppm` → `mutool` → `gs` 依次尝试，三者有其一就能出图；模型看到的是 `image_url` data:URL，不是文件名
+- **DOCX**：zip + XML 抽段落文字（零依赖，永远可用）；`word/media/` 里的插图原样抽出来给模型看；装了 `soffice` 就整份转 PDF 再按页渲染
+- **.doc**：需要 `soffice`
+- **分片**：单次最多 12 页，返回里会写「还有 N 页没看」和下一段的调用参数，不会一口气把 200 页塞爆上下文
+
+**附件自动挂载**：网页上传或终端 `/open` 挂上的 PDF / Word，服务端在开跑前就把文字抽好、前 6 页渲染成 PNG，塞进 `attachments`，跟图片走同一条 `_parts_for` 通路。你不用先喊一句「请调用 view_document」。
+
+**Termux 依赖**（都是可选的系统命令行，不是 pip）：
+
+```bash
+pkg install poppler        # pdftoppm + pdftotext + pdfinfo：PDF 页面图与文字
+pkg install libreoffice    # soffice：Word / .doc 整页转图（比较大，按需装）
+```
+
+没装 poppler 时功能不会崩：照样给 PDF 文字，并在结果里写一句「这台机器没有 PDF 渲染器（Termux 里跑一句 pkg install poppler 就好）」。
 
 ---
 
@@ -429,6 +457,7 @@ Agent 侧的工具：`plugin_list` `plugin_create` `plugin_update` `plugin_read`
 | Cookie | `get_cookie` `set_cookie` `delete_cookie` `get_cookie_header` `import_cookie_from_storage_state` `import_cookie_from_browser` |
 | 联网 | `web_search` `fetch_url` |
 | 媒体 | `generate_image` `generate_video` `view_image` `video_probe` `video_frames` `video_audio` `speak_text` |
+| 文档 | `view_document`（pdf / docx / doc：按页抽文字 + 页面渲染成图） |
 | 定时 | `schedule_list` `schedule_create` `schedule_update` `schedule_delete` `schedule_run` |
 | Skill | `list_skills` `read_skill` `load_skill` |
 | 插件 | 上面那 9 个 |

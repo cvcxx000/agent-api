@@ -9,11 +9,15 @@ import queue
 import threading
 from typing import Any
 
+from . import documents
 from .agent import Agent
 from .errors import AppError, NotFoundError
 from .sessions import Session, SubagentRecord
 from .server import Request, Response, Router, StreamResponse, json_response
 from .tools.base import ToolContext
+
+from pathlib import Path
+
 
 logger = logging.getLogger("agent.api")
 
@@ -131,11 +135,59 @@ def build_router(runtime: Any) -> Router:
                 )
         return out
 
-    def _with_attachments(text: str, atts: list[dict[str, Any]]) -> str:
+    def _expand_documents(atts: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+        """PDF / Word 附件：自动抽文字 + 前几页渲染成图，跟图片走同一条挂载通道。"""
         if not atts:
+            return atts, []
+        notes: list[str] = []
+        out: list[dict[str, Any]] = []
+        root = Path(runtime.settings.sandbox_root)
+        for item in atts:
+            raw = str(item.get("path") or "")
+            suffix = Path(raw).suffix.lower()
+            if not documents.is_document(suffix):
+                out.append(item)
+                continue
+            target = Path(raw)
+            if not target.is_absolute():
+                target = root / raw
+            if not target.exists():
+                notes.append(f"[附件 {raw}：服务端没找到这个文件]")
+                out.append(item)
+                continue
+            try:
+                out_dir = root / "_docpages" / (Path(raw).stem[:40] or "doc")
+                expanded = documents.expand_attachment(target, out_dir, max_pages=6)
+            except Exception as exc:  # noqa: BLE001 - 文档坏了不能把整轮拖垮
+                logger.warning("附件展开失败 %s：%s", raw, exc)
+                notes.append(f"[附件 {raw}：展开失败 {type(exc).__name__}: {exc}]")
+                out.append(item)
+                continue
+            note = f"{expanded['text']}"
+            if expanded["note"]:
+                note += f"\n（{expanded['note']}）"
+            notes.append(note)
+            for image in expanded["images"]:
+                try:
+                    rel = str(Path(image).relative_to(root))
+                except ValueError:
+                    rel = str(image)
+                out.append({"path": rel, "name": Path(image).name, "type": "docpage"})
+        return out[:8], notes
+
+    def _with_attachments(text: str, atts: list[dict[str, Any]], notes: list[str] | None = None) -> str:
+        if not atts and not notes:
             return text
-        lines = [f"- {a['path']}（{a.get('type') or '文件'}）" for a in atts]
-        return text + "\n\n[附件（都在 workspace 下）]\n" + "\n".join(lines)
+        parts = [text]
+        labels = {"image": "图片", "docpage": "文档页图", "file": "文件"}
+        if atts:
+            lines = [f"- {a['path']}（{labels.get(str(a.get('type') or ''), '文件')}）" for a in atts]
+            parts.append("[附件（都在 workspace 下）]\n" + "\n".join(lines))
+        if notes:
+            has_pages = any(str(a.get("type")) == "docpage" for a in atts)
+            head = "[文档内容已自动抽取" + ("，页面图已挂上]" if has_pages else "，只发了文字]")
+            parts.append(head + "\n" + "\n\n".join(notes))
+        return "\n\n".join(parts)
 
     def chat(req: Request, params: dict[str, str]) -> Response:
         body = req.json()
@@ -144,10 +196,11 @@ def build_router(runtime: Any) -> Router:
             raise AppError("message 不能为空")
         session = _prepare_session(body)
         atts = _attachments(body)
+        atts, doc_notes = _expand_documents(atts)
         max_turns = body.get("max_turns")
         ctx = ToolContext(session=session, agent_id="main", depth=0, allow_spawn=True)
         agent = Agent(runtime, session, ctx, max_turns=int(max_turns) if max_turns else None)
-        result = agent.run(_with_attachments(message, atts), attachments=atts)
+        result = agent.run(_with_attachments(message, atts, doc_notes), attachments=atts)
         return json_response(
             {
                 "session_id": session.id,
@@ -168,6 +221,7 @@ def build_router(runtime: Any) -> Router:
             raise AppError("message 不能为空")
         session = _prepare_session(body)
         atts = _attachments(body)
+        atts, doc_notes = _expand_documents(atts)
         max_turns = body.get("max_turns")
         ctx = ToolContext(session=session, agent_id="main", depth=0, allow_spawn=True)
         agent = Agent(runtime, session, ctx, max_turns=int(max_turns) if max_turns else None)
@@ -177,7 +231,7 @@ def build_router(runtime: Any) -> Router:
 
         def worker() -> None:
             try:
-                result = agent.run(_with_attachments(message, atts), emit=events.put, attachments=atts)
+                result = agent.run(_with_attachments(message, atts, doc_notes), emit=events.put, attachments=atts)
                 events.put(
                     {
                         "type": "final",

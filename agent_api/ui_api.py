@@ -246,15 +246,28 @@ def mount(router) -> None:
             raise AppError(f"base64 解不开：{exc}") from exc
         if not raw:
             raise AppError("内容为空")
-        if len(raw) > 8 * 1024 * 1024:
-            raise AppError("文件超过 8 MB")
-        suffix = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}.get(mime, ".bin")
-        if suffix == ".bin":
-            raise AppError(f"只收图片（png/jpeg/webp/gif），收到 {mime or '未知'}")
+        suffix = {
+            "image/png": ".png",
+            "image/jpeg": ".jpg",
+            "image/webp": ".webp",
+            "image/gif": ".gif",
+            "application/pdf": ".pdf",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+            "application/msword": ".doc",
+        }.get(mime, "")
+        if not suffix:
+            # 手机浏览器 / curl 常常给 application/octet-stream，按扩展名再猜一次
+            guess = str(body.get("name") or body.get("filename") or "")
+            suffix = Path(guess).suffix.lower()
+            if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".pdf", ".docx", ".doc"}:
+                raise AppError(f"只收图片和 pdf / docx / doc，收到 {mime or '未知'}")
+        limit = 8 * 1024 * 1024 if suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif"} else 12 * 1024 * 1024
+        if len(raw) > limit:
+            raise AppError(f"文件超过 {limit // 1024 // 1024} MB")
         settings = req.runtime.settings
         target_dir = Path(settings.sandbox_root) / "uploads"
         target_dir.mkdir(parents=True, exist_ok=True)
-        stem = _re.sub(r"[^A-Za-z0-9_-]+", "-", str(body.get("name") or "paste")).strip("-")[:24] or "paste"
+        stem = _re.sub(r"[^A-Za-z0-9_-]+", "-", Path(str(body.get("name") or "paste")).stem).strip("-")[:24] or "paste"
         name = f"{_time.strftime('%Y%m%d-%H%M%S')}-{stem}{suffix}"
         target = target_dir / name
         target.write_bytes(raw)
