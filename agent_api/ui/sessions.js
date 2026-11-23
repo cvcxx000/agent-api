@@ -92,7 +92,14 @@ async function refreshUsage(){
   try{
     const j = await apiGet('/api/sessions/' + encodeURIComponent(sessionId) + '/messages?limit=1');
     showUsage(j.usage);
-  }catch(e){ }
+  }catch(e){
+    if (/404|会话不存在/.test(String((e && e.message) || e))){
+      sessionId = null;
+      localStorage.removeItem(LS.session);
+      showSession();
+      showUsage({});
+    }
+  }
 }
 
 async function ensureSession(){

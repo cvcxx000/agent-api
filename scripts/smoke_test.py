@@ -144,6 +144,12 @@ step_names = [s.get("name") for s in body.get("steps", []) if s.get("type") == "
 check("chat mock tool loop", status == 200 and "run_python" in step_names, json.dumps(body, ensure_ascii=False)[:400])
 
 session_id = body.get("session_id")
+status, body = jcall("POST", "/api/chat", {"message": "会话丢了自检", "session_id": "sess_not_exist"})
+check(
+    "旧 session_id 不存在时自动新建（换 data 目录后不会卡死）",
+    status == 200 and body.get("session_id") not in (None, "", "sess_not_exist"),
+    str(body)[:200],
+)
 status, body = jcall("POST", f"/api/sessions/{session_id}/system-prompt", {"prompt": "你是一个自检助手。", "mode": "append"})
 check("runtime system prompt", body.get("ok") is True, str(body)[:200])
 

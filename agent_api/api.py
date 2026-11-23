@@ -94,11 +94,18 @@ def build_router(runtime: Any) -> Router:
         session_id = body.get("session_id")
         if session_id is not None and not isinstance(session_id, str):
             raise AppError("session_id 必须是字符串")
-        session = runtime.sessions.get_or_create(
-            session_id,
-            title=str(body.get("title") or ""),
-            system_prompt=body.get("system_prompt") if isinstance(body.get("system_prompt"), str) else None,
-        )
+        try:
+            session = runtime.sessions.get_or_create(
+                session_id,
+                title=str(body.get("title") or ""),
+                system_prompt=body.get("system_prompt") if isinstance(body.get("system_prompt"), str) else None,
+            )
+        except NotFoundError:
+            logger.warning("会话 %s 不存在（可能换过 data 目录），自动新建一个", session_id)
+            session = runtime.sessions.create(
+                title=str(body.get("title") or ""),
+                system_prompt=body.get("system_prompt") if isinstance(body.get("system_prompt"), str) else None,
+            )
         if session_id:
             if body.get("title"):
                 session.title = str(body["title"])
