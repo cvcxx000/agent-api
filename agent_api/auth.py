@@ -10,6 +10,8 @@
 - Google 登录走标准 OAuth 2.0（授权码 + userinfo），只用 urllib；
 - 忘记密码不依赖邮件：用 **Google 身份认证** 或注册时给的 **恢复码** 重置；
 - 登录失败 5 次锁 15 分钟；认证动作都写日志。
+- 默认 `AUTH_MODE=on`：没账号时第一屏是「创建第一个账号」，建完即生效；
+  想回到「有账号才要求登录」的旧行为，设 `AUTH_MODE=auto`。
 
 边界：这是「一台设备一个主人」的工具，多个账号共用同一个 workspace /
 同一批会话，不做多租户隔离。要隔离就换 DATA_DIR / SANDBOX_ROOT 再起一个。
@@ -194,7 +196,7 @@ class AuthService:
 
     # ---------------- 状态 ----------------
     def _mode(self) -> str:
-        return (os.getenv("AUTH_MODE") or "auto").strip().lower()
+        return (os.getenv("AUTH_MODE") or "on").strip().lower()
 
     def users(self) -> list[dict[str, Any]]:
         with self._lock:
