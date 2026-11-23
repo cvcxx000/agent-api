@@ -52,7 +52,7 @@ async function showSettings(){
       (s.schedules ? (s.schedules + ' 个任务在跑') : '还没有任务') + ' · cron 到点自动跑',
       () => pushSheet('schedules', '定时任务', 'cron 到点自动跑', () => showSchedules())));
     w.appendChild(settingRow('▤', 'Web 服务器',
-      s.host + ':' + s.port + ' · ' + (s.auth_enabled ? '已开鉴权' : '无鉴权'),
+      s.host + ':' + s.port + ' · ' + ((auth.enabled) ? '账号登录已启用' : (s.auth_enabled ? '已开 API_TOKEN 鉴权' : '无鉴权')),
       () => pushSheet('server', 'Web 服务器', '监听地址', () => showServer())));
     w.appendChild(el('div', 'sect', '数据设置'));
     w.appendChild(settingRow('▣', '数据备份',
