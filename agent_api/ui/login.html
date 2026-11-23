@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>登录 · Agent</title>
+<style>
+  :root{
+    --bg:#f5f1e8; --card:#fffdf7; --ink:#2b2620; --ink-soft:#6d6355;
+    --line:#e5ddcd; --accent:#b4552d; --accent-ink:#fff; --field:#fffefa; --bad:#b3261e;
+    --shadow:0 10px 30px rgba(70,50,30,.08);
+  }
+  [data-theme="dark"]{
+    --bg:#161311; --card:#211c19; --ink:#f2e9dc; --ink-soft:#a3968a;
+    --line:#37302b; --accent:#e0784a; --accent-ink:#1a120e; --field:#2a2320; --bad:#ff8f86;
+    --shadow:0 10px 30px rgba(0,0,0,.4);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Noto Sans SC",sans-serif;
+    display:flex; align-items:center; justify-content:center; padding:24px;
+    -webkit-text-size-adjust:100%;
+  }
+  .wrap{width:100%; max-width:420px}
+  .brand{display:flex; gap:12px; align-items:center; margin-bottom:18px}
+  .logo{width:44px;height:44px;border-radius:12px;background:var(--accent);color:var(--accent-ink);
+    display:grid;place-items:center;font-weight:700;font-size:20px}
+  .brand b{font-size:19px;display:block}
+  .brand i{font-style:normal;color:var(--ink-soft);font-size:13px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:22px;box-shadow:var(--shadow)}
+  .pane{display:none}
+  .pane.on{display:block}
+  h1{font-size:20px;margin:0 0 4px}
+  .sub{color:var(--ink-soft);font-size:13px;margin:0 0 18px}
+  label{display:block;font-size:13px;color:var(--ink-soft);margin:14px 0 6px}
+  input{
+    width:100%;padding:12px 13px;border-radius:11px;border:1px solid var(--line);
+    background:var(--field);color:var(--ink);font-size:16px;outline:none;
+  }
+  input:focus{border-color:var(--accent)}
+  button{
+    width:100%;margin-top:16px;padding:13px;border:0;border-radius:12px;
+    background:var(--accent);color:var(--accent-ink);font-size:16px;font-weight:600;cursor:pointer;
+  }
+  button:disabled{opacity:.55}
+  button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line);font-weight:500}
+  .gbtn{display:flex;align-items:center;justify-content:center;gap:10px;background:var(--field);
+    color:var(--ink);border:1px solid var(--line)}
+  .gbtn svg{width:18px;height:18px}
+  .row2{display:flex;gap:10px;margin-top:8px}
+  .row2 button{margin-top:8px}
+  .msg{margin-top:14px;font-size:13px;border-radius:10px;padding:10px 12px;display:none}
+  .msg.on{display:block}
+  .msg.ok{background:rgba(45,130,80,.12);color:#226b42}
+  .msg.bad{background:rgba(179,38,30,.1);color:var(--bad)}
+  [data-theme="dark"] .msg.ok{color:#8fe0ad}
+  .hint{font-size:12.5px;color:var(--ink-soft);margin-top:12px;line-height:1.5}
+  .link{color:var(--accent);cursor:pointer;text-decoration:none;font-size:13px}
+  .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+  .code{
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:18px;letter-spacing:1px;
+    text-align:center;padding:14px;border-radius:12px;border:1px dashed var(--accent);
+    background:rgba(180,85,45,.07);margin:14px 0;user-select:all;word-break:break-all;
+  }
+  .foot{text-align:center;color:var(--ink-soft);font-size:12px;margin-top:16px}
+  .tabs{display:flex;gap:8px;margin-bottom:16px;background:var(--bg);padding:4px;border-radius:12px}
+  .tabs button{margin:0;background:transparent;color:var(--ink-soft);font-size:13px;padding:8px;border-radius:9px}
+  .tabs button.on{background:var(--card);color:var(--ink);box-shadow:0 1px 4px rgba(0,0,0,.06)}
+  .pane .alt{text-align:center;margin-top:14px;font-size:13px;color:var(--ink-soft)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">
+    <div class="logo">◆</div>
+    <div><b>Agent</b><i id="mode-line">本机工具型 Agent</i></div>
+  </div>
+  <div class="card">
+    <div id="loading" class="sub">正在检查这台设备的账号状态…</div>
+
+    <!-- 登录 -->
+    <div class="pane" id="pane-login">
+      <h1>登录</h1>
+      <p class="sub">这台设备已经启用账号体系，先登录再用。</p>
+      <label for="login-email">邮箱</label>
+      <input id="login-email" type="email" autocomplete="username" placeholder="you@gmail.com">
+      <label for="login-password">密码</label>
+      <input id="login-password" type="password" autocomplete="current-password" placeholder="至少 8 位">
+      <button id="btn-login">登录</button>
+      <button class="gbtn" id="btn-google-login" style="display:none">
+        <svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9.1 3.6l6.8-6.8C35.9 2.4 30.4 0 24 0 14.6 0 6.5 5.4 2.5 13.3l7.9 6.1C12.5 13.7 17.8 9.5 24 9.5z"/><path fill="#4285F4" d="M46.1 24.5c0-1.6-.1-2.8-.4-4.1H24v8.1h12.5c-.3 2-1.5 4.9-4.3 6.9l7.7 6c4.4-4.1 6.2-10.2 6.2-16.9z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.7-6c-2.1 1.4-4.9 2.3-8.2 2.3-6.3 0-11.6-4.2-13.5-9.9l-8 6.2C6.4 42.6 14.5 48 24 48z"/><path fill="#FBBC05" d="M10.5 28.6c-.5-1.4-.8-2.9-.8-4.6s.3-3.2.8-4.6l-8-6.2C1 16.2 0 20 0 24s1 7.8 2.5 10.8l8-6.2z"/></svg>
+        用 Google 登录
+      </button>
+      <div class="row2">
+        <button class="ghost" id="btn-forgot">忘记密码</button>
+        <button class="ghost" id="btn-key">密钥登录</button>
+      </div>
+      <div id="msg-login" class="msg"></div>
+      <p class="alt" id="login-register-hint" style="display:none">第一次用？<span class="link" data-go="register">创建账号</span></p>
+    </div>
+
+    <!-- 注册 -->
+    <div class="pane" id="pane-register">
+      <h1 id="reg-title">创建账号</h1>
+      <p class="sub" id="reg-sub">这台设备还没有账号，第一个账号就是主人（owner）。</p>
+      <label for="reg-email">邮箱</label>
+      <input id="reg-email" type="email" autocomplete="username" placeholder="you@gmail.com">
+      <label for="reg-name">名字（可选）</label>
+      <input id="reg-name" type="text" placeholder="怎么称呼你">
+      <label for="reg-password">密码</label>
+      <input id="reg-password" type="password" autocomplete="new-password" placeholder="至少 8 位，别用生日">
+      <button id="btn-register">创建账号</button>
+      <div id="msg-register" class="msg"></div>
+      <p class="alt" id="reg-login-hint" style="display:none">已经有账号？<span class="link" data-go="login">去登录</span></p>
+    </div>
+
+    <!-- 恢复码展示 -->
+    <div class="pane" id="pane-recovery">
+      <h1>记下恢复码</h1>
+      <p class="sub">忘记密码时，除了 Google，这个码是唯一的退路。它只显示这一次。</p>
+      <div class="code" id="recovery-code">—</div>
+      <button id="btn-copy-recovery" class="ghost">复制恢复码</button>
+      <button id="btn-recovery-done">我记下了，进入</button>
+      <div class="hint">建议抄到纸上或存进密码管理器。之后在「设置 → 账号与安全」里还能重新生成。</div>
+    </div>
+
+    <!-- 忘记密码 -->
+    <div class="pane" id="pane-forgot">
+      <div class="top"><h1>忘记密码</h1><span class="link" data-go="login">返回登录</span></div>
+      <p class="sub">先填注册用的邮箱，看看这个账号有哪些重置方式。</p>
+      <label for="forgot-email">邮箱</label>
+      <input id="forgot-email" type="email" placeholder="you@gmail.com">
+      <button id="btn-forgot-check">下一步</button>
+      <div id="forgot-methods" style="display:none">
+        <div class="hint" id="forgot-hint"></div>
+        <button class="gbtn" id="btn-google-reset" style="display:none">用 Google 身份认证重置</button>
+        <button class="ghost" id="btn-use-code" style="display:none">用恢复码重置</button>
+      </div>
+      <div id="msg-forgot" class="msg"></div>
+    </div>
+
+    <!-- 恢复码重置 -->
+    <div class="pane" id="pane-reset">
+      <div class="top"><h1>用恢复码重置</h1><span class="link" data-go="forgot">返回</span></div>
+      <label for="reset-email">邮箱</label>
+      <input id="reset-email" type="email" placeholder="you@gmail.com">
+      <label for="reset-code">恢复码</label>
+      <input id="reset-code" type="text" placeholder="XXXX-XXXX-XXXX" autocomplete="off">
+      <label for="reset-password">新密码</label>
+      <input id="reset-password" type="password" autocomplete="new-password" placeholder="至少 8 位">
+      <button id="btn-reset">重置并给我新恢复码</button>
+      <div id="msg-reset" class="msg"></div>
+      <div id="reset-newcode" style="display:none">
+        <div class="hint">旧恢复码已作废，这是新的：</div>
+        <div class="code" id="reset-code-out">—</div>
+        <button class="ghost" id="btn-reset-done">去登录</button>
+      </div>
+    </div>
+
+    <!-- Google 票重置 -->
+    <div class="pane" id="pane-ticket">
+      <h1>设置新密码</h1>
+      <p class="sub">Google 已经确认是你本人。这张重置票 10 分钟内有效，只能用一次。</p>
+      <label for="ticket-email">账号</label>
+      <input id="ticket-email" type="email" readonly>
+      <label for="ticket-password">新密码</label>
+      <input id="ticket-password" type="password" autocomplete="new-password" placeholder="至少 8 位">
+      <button id="btn-ticket">设置新密码</button>
+      <div id="msg-ticket" class="msg"></div>
+      <div id="ticket-newcode" style="display:none">
+        <div class="hint">顺便给你一个新的恢复码（旧的已作废）：</div>
+        <div class="code" id="ticket-code-out">—</div>
+        <button class="ghost" id="btn-ticket-done">去登录</button>
+      </div>
+    </div>
+
+    <!-- 密钥登录 -->
+    <div class="pane" id="pane-key">
+      <div class="top"><h1>密钥登录</h1><span class="link" data-go="login">返回</span></div>
+      <p class="sub">把「账号与安全」里生成的 <code>ak_…</code> 粘进来，换一个浏览器登录态。</p>
+      <label for="key-input">API 密钥</label>
+      <input id="key-input" type="text" placeholder="ak_..." autocomplete="off">
+      <button id="btn-key-login">用密钥登录</button>
+      <div id="msg-key" class="msg"></div>
+    </div>
+  </div>
+  <div class="foot">密钥只存在这台设备本地 · <span class="link" id="theme-toggle">切换深色</span></div>
+</div>
+<script src="/ui/login.js"></script>
+</body>
+</html>

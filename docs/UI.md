@@ -115,3 +115,28 @@ GET    /api/sessions/{id}/export          导出 Markdown（含工具输出）
 - 改 `HOST` / `PORT` / `API_TOKEN` / Python 与 Shell 开关仍要改 `.env` 再重启（页面里只读展示）。
 - 定时任务按**服务器本地时区**触发；Termux 上就是手机时区。
 - 定时任务同时最多跑 2 个（`SCHEDULE_CONCURRENCY`），多的排队；失败原因会写进对应 `[定时]` 会话。
+
+## 登录页（`/login`）
+
+独立页面（`agent_api/ui/login.html` + `ui/login.js`），一个有七种状态的卡片：
+
+- 登录：邮箱 + 密码；配了 Google 会出现「用 Google 登录」
+- 注册：第一个账号会提示是 owner；注册成功直接展示**恢复码**（只显示一次，可一键复制）
+- 忘记密码：先查邮箱，按返回列出可用方式（Google / 恢复码），不暴露「账号是否存在」以外的信息
+- 恢复码重置：邮箱 + 恢复码 + 新密码，成功后给新恢复码
+- Google 票重置：从 `?reset_ticket=…` 进来，10 分钟内只能用一次
+- 密钥登录：粘 `ak_…` 换 Cookie
+- 错误态：Google 回调失败会 302 到 `/login?error=…` 并显示原因
+
+浅色 / 深色跟随 `localStorage.agent_theme`，与主界面一致。
+
+## 账号与安全（设置里）
+
+`settings.js` 新增「⛨ 账号与安全」入口，内容由 `account.js`（`showAccount()`）渲染：
+
+- 当前账号：名字、邮箱、角色、这次是用 Cookie / 密钥 / API Token 进来的
+- 改密码：旧密码 + 新密码，成功后返回新恢复码，其它设备立刻下线
+- API 密钥：列表（名字、前缀、创建时间、最后使用时间）、生成（只显示一次）、吊销
+- 登录设备：IP / 客户端 / 时间，最多显示 10 条
+- 退出登录 / 退出所有设备
+- Google 配置（仅 owner）：Client ID、Secret、重定向 URI 提示、「允许别人注册」

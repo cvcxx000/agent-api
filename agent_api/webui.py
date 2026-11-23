@@ -21,6 +21,9 @@ _CONTENT_TYPES = {
     "canvas.js": "application/javascript; charset=utf-8",
     "tts.js": "application/javascript; charset=utf-8",
     "schedules.js": "application/javascript; charset=utf-8",
+    "login.html": "text/html; charset=utf-8",
+    "login.js": "application/javascript; charset=utf-8",
+    "account.js": "application/javascript; charset=utf-8",
 }
 
 _MIME = {
@@ -55,6 +58,9 @@ def mount(router) -> None:
     from .ui_api import mount as mount_api
 
     def page(req, params):
+        auth = getattr(req.runtime, "auth", None)
+        if auth is not None and auth.enabled() and not auth.identity(req):
+            return Response(302, None, headers={"Location": "/login"})
         return Response(
             200,
             _load("page.html"),
@@ -73,8 +79,18 @@ def mount(router) -> None:
 
         return handler
 
+    def login_page(req, params):
+        return Response(
+            200,
+            _load("login.html"),
+            headers={"Cache-Control": "no-cache"},
+            content_type=_CONTENT_TYPES["login.html"],
+        )
+
     router.add("GET", "/", page, auth=False)
     router.add("GET", "/ui", page, auth=False)
+    router.add("GET", "/login", login_page, auth=False)
+    router.add("GET", "/ui/login.html", login_page, auth=False)
     router.add("GET", "/ui/app.css", make("app.css"), auth=False)
     router.add("GET", "/ui/core.js", make("core.js"), auth=False)
     router.add("GET", "/ui/sessions.js", make("sessions.js"), auth=False)
@@ -84,6 +100,8 @@ def mount(router) -> None:
     router.add("GET", "/ui/tts.js", make("tts.js"), auth=False)
     router.add("GET", "/ui/schedules.js", make("schedules.js"), auth=False)
     router.add("GET", "/ui/canvas.js", make("canvas.js"), auth=False)
+    router.add("GET", "/ui/login.js", make("login.js"), auth=False)
+    router.add("GET", "/ui/account.js", make("account.js"), auth=False)
 
     def media_file(subdir: str):
         """只放行 workspace/<subdir>/<文件名>，不让目录穿越。"""
@@ -150,7 +168,7 @@ def mount(router) -> None:
 
         return handler
 
-    router.add("GET", "/files/media/{name}", media_file("media"), auth=False)
-    router.add("GET", "/files/uploads/{name}", media_file("uploads"), auth=False)
+    router.add("GET", "/files/media/{name}", media_file("media"), auth=True)
+    router.add("GET", "/files/uploads/{name}", media_file("uploads"), auth=True)
     router.add("GET", "/favicon.ico", lambda req, params: Response(204), auth=False)
     mount_api(router)

@@ -287,13 +287,22 @@ function headers(){
   if (t){ h['X-API-Token'] = t; }
   return h;
 }
+function needLogin(resp, path){
+  if (resp.status === 401 && !String(path).startsWith('/api/auth')){
+    location.href = '/login';
+    return true;
+  }
+  return false;
+}
 async function apiGet(path){
   const resp = await fetch(path, { headers: headers() });
+  if (needLogin(resp, path)) throw new Error('需要登录');
   if (!resp.ok){ throw new Error('HTTP ' + resp.status + ' ' + (await resp.text()).slice(0, 160)); }
   return resp.json();
 }
 async function apiPost(path, body){
   const resp = await fetch(path, { method: 'POST', headers: headers(), body: JSON.stringify(body || {}) });
+  if (needLogin(resp, path)) throw new Error('需要登录');
   const text = await resp.text();
   let data = null;
   try { data = JSON.parse(text); } catch (e) { data = { raw: text }; }
@@ -303,6 +312,7 @@ async function apiPost(path, body){
 
 async function apiDelete(path){
   const resp = await fetch(path, { method: 'DELETE', headers: headers() });
+  if (needLogin(resp, path)) throw new Error('需要登录');
   const text = await resp.text();
   let data = null;
   try { data = JSON.parse(text); } catch (e) { data = { raw: text }; }

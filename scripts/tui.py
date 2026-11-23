@@ -9,7 +9,8 @@
     /new             新会话
     /model           选提供商和模型（列表里挑编号，立即生效）
     /providers       列出提供商与模型
-    /skills          列出所有技能（SKILL.md）
+    /whoami          看当前身份（账号 / 密钥）
+  /skills          列出所有技能（SKILL.md）
     /skill 名字       把技能载入当前会话
     /search 关键词    直接查搜索服务
     /image 提示词     直接生成图片
@@ -76,13 +77,23 @@ class Api:
             head["X-API-Token"] = self.token
         return head
 
+    def _auth_hint(self, code: int) -> str:
+        if code != 401:
+            return ""
+        return ("这是没登录/没凭证。\n"
+                "  · 网页：浏览器打开 /login 登录一次；\n"
+                "  · 终端：在「设置 → 账号与安全 → API 密钥」生成 ak_…，然后 "
+                "python3 scripts/tui.py --token ak_xxx\n"
+                "  · 或者在服务端 .env 里设 API_TOKEN，用 --token 你的API_TOKEN")
+
     def get(self, path: str) -> dict:
         req = urllib.request.Request(self.base + enc_path(path), headers=self.headers())
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 return json.loads(resp.read().decode("utf-8") or "{}")
         except urllib.error.HTTPError as exc:
-            raise SystemExit("接口错误：" + exc.read().decode("utf-8", "replace")[:400]) from exc
+            detail = exc.read().decode("utf-8", "replace")[:400]
+            raise SystemExit("接口错误：" + detail + ("\n" + self._auth_hint(exc.code) if exc.code == 401 else "")) from exc
         except urllib.error.URLError as exc:
             raise SystemExit(f"连不上 {self.base}：{exc.reason}") from exc
         except Exception as exc:  # noqa: BLE001  URL 里出现编码不了的字符等
@@ -95,7 +106,7 @@ class Api:
                 return json.loads(resp.read().decode("utf-8") or "{}")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:400]
-            raise RuntimeError(f"HTTP {exc.code}：{detail}") from exc
+            raise RuntimeError(f"HTTP {exc.code}：{detail}" + ("\n" + self._auth_hint(exc.code) if exc.code == 401 else "")) from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(f"连不上 {self.base}：{exc.reason}") from exc
         except Exception as exc:  # noqa: BLE001
@@ -109,7 +120,7 @@ class Api:
                 return json.loads(resp.read().decode("utf-8") or "{}")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:400]
-            raise RuntimeError(f"HTTP {exc.code}：{detail}") from exc
+            raise RuntimeError(f"HTTP {exc.code}：{detail}" + ("\n" + self._auth_hint(exc.code) if exc.code == 401 else "")) from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(f"连不上 {self.base}：{exc.reason}") from exc
         except Exception as exc:  # noqa: BLE001  URL 里出现编码不了的字符等
@@ -401,6 +412,7 @@ COMMANDS = [
     ("/help", "命令列表"),
     ("/model", "选模型（真实列表，编号即切）"),
     ("/providers", "看提供商与模型"),
+    ("/whoami", "看当前账号 / 身份来源"),
     ("/skills", "列出所有技能"),
     ("/skill", "载入技能：/skill 名字"),
     ("/search", "搜网：/search 黄金价格"),
@@ -459,6 +471,28 @@ def print_cmds():
     print(c(DIM, "命令（打 / 看清单，Tab 补全）："))
     for k, d in COMMANDS:
         print("  " + c(CYAN, k.ljust(11)) + c(DIM, d))
+
+
+def cmd_whoami(api):
+    try:
+        data = api.get("/api/auth/me")
+    except (RuntimeError, SystemExit) as exc:
+        print(c(RED, str(exc)))
+        return
+    me = data.get("me") or {}
+    ident = data.get("identity") or {}
+    if ident.get("via") == "token":
+        print(c(BOLD, "身份：") + "全局 API Token（管理员通道）")
+        return
+    if not me or not me.get("email"):
+        print(c(DIM, "账号体系没开：这台设备谁打开都能用。"))
+        return
+    role = "主人（owner）" if me.get("role") == "owner" else "成员"
+    via = {"cookie": "网页登录", "key": "API 密钥"}.get(ident.get("via"), ident.get("via") or "—")
+    print(c(BOLD, "账号：") + str(me.get("email")) + c(DIM, f"  {role} · 来源 {via}"))
+    keys = me.get("keys") or []
+    if keys:
+        print(c(DIM, f"  这个账号有 {len(keys)} 个 API 密钥"))
 
 
 def cmd_skills(api):
@@ -686,6 +720,9 @@ def main() -> None:
             continue
         if line == "/skill":
             print(c(RED, "用法：/skill 名字（先 /skills 看列表）"))
+            continue
+        if line == "/whoami":
+            cmd_whoami(api)
             continue
         if line == "/skills":
             cmd_skills(api)

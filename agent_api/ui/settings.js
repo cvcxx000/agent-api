@@ -16,6 +16,12 @@ async function showSettings(){
     const s = await apiGet('/api/ui/settings');
     const media = s.media || {};
     const search = s.search || {};
+    const auth = s.auth || {};
+    w.appendChild(el('div', 'sect', '账号与安全'));
+    w.appendChild(settingRow('⛨', '账号与安全',
+      auth.setup_needed ? '还没账号 · 谁打开都能用' :
+        ((auth.users || 0) + ' 个账号 · 登录已启用' + (auth.google_on ? ' · Google 可用' : '')),
+      () => showAccount()));
     w.appendChild(el('div', 'sect', '模型与服务'));
     w.appendChild(settingRow('☆', '默认模型和提示词',
       (s.model || '未配置') + (s.mock_llm ? '（Mock）' : '') + ' · 全局默认提示词',

@@ -27,6 +27,8 @@ class Request:
         self.headers = headers
         self.body = body
         self.runtime = runtime
+        self.client_ip = ""
+        self.identity: dict[str, Any] | None = None
 
     def header(self, name: str, default: str | None = None) -> str | None:
         return self.headers.get(name.lower(), default)
@@ -119,7 +121,11 @@ class Router:
             if not match:
                 continue
             if auth:
-                check_token(request.header("x-api-token"))
+                service = getattr(request.runtime, "auth", None)
+                if service is not None:
+                    service.require(request)
+                else:
+                    check_token(request.header("x-api-token"))
             params = {key: unquote(value) for key, value in match.groupdict().items()}
             return handler(request, params)
         raise NotFoundError(f"未知接口：{request.method} {path}")
@@ -151,7 +157,7 @@ def _make_handler(router: Router):
 
         def _cors_headers(self) -> None:
             self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-API-Token")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-API-Token, Authorization, X-API-Key")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 
         def _handle(self, method: str) -> None:
@@ -169,6 +175,7 @@ def _make_handler(router: Router):
                 return
             body = self.rfile.read(length) if length > 0 else b""
             request = Request(method, path, query, headers, body, self.server.runtime)  # type: ignore[attr-defined]
+            request.client_ip = str(self.client_address[0] or "")
 
             try:
                 response = router.dispatch(request)

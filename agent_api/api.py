@@ -476,4 +476,8 @@ def build_router(runtime: Any) -> Router:
     router.add("POST", "/api/schedules/{task_id}/run", run_schedule)
     router.add("GET", "/api/sessions/{session_id}/export", export_session)
 
+    from .auth_api import mount_auth
+
+    mount_auth(router, runtime)
+
     return router

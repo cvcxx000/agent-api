@@ -16,6 +16,8 @@
 | 视频能不能抽帧？ | `video_probe`（读时长/分辨率/帧率/编码）、`video_frames`（按数量或时间点抽帧，产物能当附件喂给模型看）、`video_audio`（导音轨成 mp3/wav/m4a） |
 | 删东西有高危授权吗？ | 有闸门 `guard`：静态规则 + 破坏面估算 + 受保护目录，命中就拒绝执行，回一句「为什么危险」，你明确同意后模型带 `confirm=true` 才会真跑 |
 | 能自己长能力吗？ | 有插件系统，10 个工具（`plugin_create` / `validate` / `enable` / `update` / `reload` / `disable` / `delete` / `list` / `read`），Agent 自己写 `.py` 进去就能多出工具 |
+| 别人打开我的地址也能用？ | 建了账号就要登录；还支持 Google 登录、给脚本发 API 密钥 |
+| 忘了密码怎么办？ | 用绑定的 Google 做身份认证，或用注册时给的恢复码，不依赖发邮件 |
 | 能不能出声？ | 有 TTS：`speak_text` 工具 + 网页「语音合成」+ 终端 `/say`，产物是能直接播的音频 |
 | 能不能自己按时干活？ | 有定时任务：cron 表达式到点自动跑一句话或一个工作流，网页/终端/Agent 三处都能建 |
 | 会话都是「无标题」？ | 首轮对话后按首句自动起标题（`_guess_title`），不再是清一色无标题 |
@@ -74,6 +76,83 @@ termux-wake-lock
 
 ---
 
+## 账号与登录
+
+**默认行为**：一个账号都没有时，谁打开都能用（保持「clone 完就能跑」）。你建了第一个账号之后，访问就自动要求登录。
+
+三种进门方式：
+
+- **密码登录**：邮箱 + 密码（`hashlib.scrypt` 存哈希，不存明文）
+- **Google 登录**：`Sign in with Google`，OAuth 2.0 授权码流程，零依赖手写
+- **密钥登录**：`ak_…` 的 API 密钥，给终端、脚本、别的设备用
+
+### 注册
+
+第一次打开 `/ui` 会被送到 `/login`，显示「创建第一个账号」。第一个账号是 **owner**（这台设备的主人），会同时给你一串 **恢复码**：
+
+```
+563FD9-CCEDAC-D97F6B
+```
+
+**恢复码只显示这一次**，抄到纸上或存进密码管理器 —— 忘记密码、又没绑 Google 时，只能靠它。之后在「设置 → 账号与安全」里随时能重新生成。
+
+注册默认只允许第一个人。想让别人也注册，owner 在「账号与安全 → Google 登录」里勾上「允许别人注册新账号」。
+
+### 忘记密码（不靠邮件）
+
+点登录页「忘记密码？」，填邮箱，会告诉你这个账号有哪些可用方式：
+
+1. **Google 身份认证**（推荐）：跳 Google 授权 → 验证你确实是这个 Google 账号的主人 → 回到本站，拿一张 10 分钟有效、只能用一次的重置票 → 设新密码。全程不需要 SMTP，也不用发邮件。
+2. **恢复码**：输入注册时那串 → 设新密码。旧恢复码立刻作废，同时给你一串新的。
+
+重置成功会**把所有设备下线**（包括当前浏览器），必须重新登录 —— 这是故意的。
+
+### Google 登录怎么配
+
+1. 打开 https://console.cloud.google.com/apis/credentials → 「创建凭据」→「OAuth 客户端 ID」→ 类型选 **Web 应用**
+2. 「已获授权的重定向 URI」填：
+
+   ```
+   http://127.0.0.1:8000/api/auth/google/callback
+   ```
+
+   端口要和你实际跑的一致。设置页会把这条现成的地址显示出来，直接复制。
+3. 建好后把 **Client ID / Client Secret** 粘到：设置 → 账号与安全 → Google 登录 → 保存
+4. 回到 `/login`，就会出现「用 Google 登录」
+
+**两个坑提前说清**：
+
+- Google **只允许 `127.0.0.1` / `localhost` 的回环地址用 http**。你用 `http://192.168.1.x:8000` 打开时，Google 会以 `redirect_uri_mismatch` 拒绝 —— 这是 Google 的规矩，不是本项目的 bug。手机自己跑服务时就是 `127.0.0.1`，没问题。
+- 同一个邮箱先用密码注册、后来又用 Google 登录，会自动把两者**绑到同一个账号**（不会多出一个空账号）。
+
+### 密钥登录（给脚本 / 终端）
+
+「账号与安全 → API 密钥」里生成，形如 `ak_...`，**只显示一次**。之后两种带法都认：
+
+```bash
+curl -H "Authorization: Bearer ak_xxx" http://127.0.0.1:8000/api/sessions
+curl -H "X-API-Token: ak_xxx"        http://127.0.0.1:8000/api/sessions
+
+python3 scripts/tui.py --token ak_xxx
+```
+
+密钥可以起名字（Termux / 笔记本 / 某个脚本）、看最后使用时间、随时吊销。删掉某个密钥不影响其它密钥，也不影响网页登录。
+
+**API 密钥和 `API_TOKEN` 的区别**：`API_TOKEN` 是全局管理员钥匙，一个通吃，适合完全信任的脚本；API 密钥是账号自己的，可吊销、能看出是谁在用。
+
+### 安全上做了什么
+
+- 密码 scrypt（n=16384, r=8, p=1）+ 随机 salt，比较用常量时间
+- 登录态是 32 字节随机 token，服务端只存 sha256；Cookie 是 `HttpOnly; SameSite=Lax`，JS 读不到，跨站 POST 带不上
+- 连续错 5 次锁 15 分钟（锁定期正确密码也登不进去）
+- 一个账号最多 20 个登录会话，超了踢最旧的；「退出所有设备」一键清
+- 设备列表能看到 IP / 客户端 / 登录时间
+- 改密码、重置密码都会把其它设备下线
+- 所有认证动作写日志（`agent.auth`），服务端日志里能查
+- `data/auth.json` 权限 600，里面只有哈希，没有明文密码和明文密钥
+
+**边界说明**：这是「一台设备一个主人」的工具，多个账号共用同一个 workspace 和同一批会话文件（没做多租户隔离）。真要隔离，换 `DATA_DIR` / `SANDBOX_ROOT` 再起一个实例。
+
 ## 终端界面（`scripts/tui.py`）
 
 ```bash
@@ -84,6 +163,7 @@ python3 scripts/tui.py --base http://127.0.0.1:8000 --token 你的TOKEN
 | 命令 | 作用 |
 | --- | --- |
 | `/model` | 列真实模型挑编号，立即切换 |
+| `/whoami` | 看现在用的是哪个账号 / 密钥身份 |
 | `/say 文字` | 合成语音（TTS），打印音频地址；Agent 自己念的话终端里显示 `语音：<地址>` |
 | `/cron` | 列出定时任务，输编号立刻跑一次；`/cron on|off 编号` 开关，`/cron del 编号` 删除 |
 | `/sessions` | 列出所有会话（带 id 和标题），可以挑一个继续 |
@@ -335,7 +415,7 @@ Agent 侧的工具：`plugin_list` `plugin_create` `plugin_update` `plugin_read`
 
 ## 接口一览
 
-除 `/health`、`/`、`/ui`、`/favicon.ico` 外都要带 `X-API-Token`（如果设了 `API_TOKEN`）。
+除 `/health`、`/`、`/ui`、`/login`、`/favicon.ico` 和 `/api/auth/*` 里标了公开的几条外，都要带凭证：网页用登录 Cookie，脚本用 `X-API-Token: ak_…`（账号密钥）或 `X-API-Token: 你的API_TOKEN`（全局钥匙），`Authorization: Bearer ak_…` 也认。
 
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
@@ -364,6 +444,23 @@ Agent 侧的工具：`plugin_list` `plugin_create` `plugin_update` `plugin_read`
 | POST | `/api/schedules/{id}` | 改名字、cron、内容，或 `{"enabled": false}` 暂停 |
 | POST | `/api/schedules/{id}/run` | 立刻跑一次（`{"wait": true}` 阻塞到跑完） |
 | GET | `/api/sessions/{id}/export` | 导出该会话为 Markdown |
+| GET | `/api/auth/status` | 是否已有账号 / 是否允许注册 / Google 是否可用（公开） |
+| POST | `/api/auth/register` | 注册（第一个账号是 owner，返回一次性恢复码） |
+| POST | `/api/auth/login` | 邮箱密码登录，下发 HttpOnly Cookie |
+| POST | `/api/auth/key-login` | 用 `ak_…` 密钥登录（换 Cookie） |
+| POST | `/api/auth/logout` | 退出当前设备 |
+| POST | `/api/auth/logout-all` | 退出所有设备 |
+| GET | `/api/auth/me` | 当前账号 / 身份来源（cookie / key / token） |
+| POST | `/api/auth/password` | 改密码（顺带把其它设备下线，返回新恢复码） |
+| POST | `/api/auth/forgot` | 查有哪些重置方式（Google / 恢复码，公开） |
+| POST | `/api/auth/reset` | 用恢复码重置 |
+| POST | `/api/auth/google/reset` | 用 Google 身份认证发的一次性票重置 |
+| GET | `/api/auth/google/start` | 跳 Google 授权（`purpose=login\|reset`） |
+| GET | `/api/auth/google/callback` | Google 回调（成功下发 Cookie / 重置票） |
+| GET / POST | `/api/auth/keys` | 列出 / 生成 API 密钥 |
+| DELETE | `/api/auth/keys/{id}` | 吊销某个密钥 |
+| GET | `/api/auth/devices` | 登录中的设备 |
+| GET / POST | `/api/auth/google/config` | Google 客户端配置（owner） |
 | GET / POST | `/api/ui/media`、`/api/ui/media/{kind}` | 图片/视频生成配置（`kind=image\|video`） |
 | POST | `/api/ui/media/{kind}/generate` | 手动试生成，产物落 `workspace/media/` |
 | POST | `/api/ui/upload` | 附件上传（base64 data_url，≤8MB） |
@@ -510,12 +607,14 @@ agent-api/
 │  ├─ media.py                # 图片与视频生成（三种轮询形状）
 │  ├─ tts.py                  # 语音合成（/audio/speech，二进制直收）
 │  ├─ schedules.py            # 定时任务：cron 解析 + 调度线程 + 执行
+│  ├─ auth.py                 # 账号：scrypt 密码、Cookie 会话、API 密钥、Google OAuth
+│  ├─ auth_api.py             # /api/auth/* 路由
 │  ├─ search.py               # 五种搜索实现
 │  ├─ net.py                  # urllib 封装 + 真实错误回传
 │  ├─ sessions.py             # 会话落盘 + 自动标题 + 子 Agent 调度
 │  ├─ skills.py / workflows.py / cookies.py / security.py
 │  ├─ tools/                  # 12 个工具模块（fs/py/web/media/video/vision/plugin/skill/…）
-│  ├─ ui/                     # page.html + app.css + 各功能 js
+│  ├─ ui/                     # page.html + login.html + app.css + 各功能 js（含 account.js）
 │  └─ prompts/default_system.md
 ├─ plugins/                   # 你写的插件放这
 ├─ skills/data-report/SKILL.md
@@ -537,7 +636,7 @@ agent-api/
 python3 scripts/smoke_test.py
 ```
 
-临时沙箱里跑一遍：鉴权、文件读写、路径逃逸、Python 执行与超时、Cookie、Skill 扫描、Mock 对话、运行时改提示词、载入 Skill、3 子 Agent 并发 + 第 4 个拒绝、工作流、SSE 与思考流、提供商目录/拉模型/切换/清理、搜索与图片视频配置、上传、Markdown 预览越界、全部前端静态资源。
+临时沙箱里跑一遍：账号体系（注册 / 登录 / 密钥 / 恢复码重置 / 锁定）、鉴权、文件读写、路径逃逸、Python 执行与超时、Cookie、Skill 扫描、Mock 对话、运行时改提示词、载入 Skill、3 子 Agent 并发 + 第 4 个拒绝、工作流、SSE 与思考流、提供商目录/拉模型/切换/清理、搜索与图片视频配置、上传、Markdown 预览越界、全部前端静态资源。
 
 ---
 

@@ -314,6 +314,7 @@ def mount(router) -> None:
                 "search": search_store.public(st),
                 "tts": tts_store.public(st),
                 "schedules": len(runtime.schedules.list()) if runtime.schedules else 0,
+                "auth": runtime.auth.status() if getattr(runtime, "auth", None) else {"enabled": False},
             },
         )
 

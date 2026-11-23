@@ -65,6 +65,32 @@ def call(method: str, path: str, body: dict | None = None, token: str | None = "
         return exc.code, exc.read().decode("utf-8", "replace")
 
 
+def hcall(method: str, path: str, body: dict | None = None, headers: dict[str, str] | None = None,
+          timeout: float = 60.0):
+    """带自定义头 / 能拿到响应头（Set-Cookie）的请求。"""
+    url = f"http://127.0.0.1:{PORT}{path}"
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
+    head = {"Content-Type": "application/json"}
+    head.update(headers or {})
+    request = urllib.request.Request(url, data=data, method=method, headers=head)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+            code, headers = resp.status, dict(resp.headers)
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", "replace")
+        code, headers = exc.code, dict(exc.headers)
+    try:
+        return code, json.loads(raw), headers
+    except json.JSONDecodeError:
+        return code, {"raw": raw}, headers
+
+
+def cookie_of(headers: dict[str, str]) -> str:
+    raw = headers.get("Set-Cookie") or headers.get("set-cookie") or ""
+    return raw.split(";")[0].strip()
+
+
 def jcall(method: str, path: str, body: dict | None = None, token: str | None = "smoke-token", timeout: float = 60.0):
     status, raw = call(method, path, body, token, timeout)
     try:
@@ -235,6 +261,86 @@ status, body = jcall(
 )
 check("video config saved", (body.get("video") or {}).get("ready") is True and body["video"]["mode"] == "generic_video", str(body)[:300])
 
+
+# ---- 账号体系：注册 / 登录 / 密钥 / 恢复码 / 锁定 ----
+status, body = jcall("GET", "/api/auth/status", token=None)
+check("auth 初始状态可读", status == 200 and body.get("users") == 0 and body.get("setup_needed") is True, str(body)[:200])
+
+status, body, headers = hcall("POST", "/api/auth/register", {"email": "smoke@example.com", "password": "SmokePass!2026", "name": "Smoke"})
+cookie = cookie_of(headers)
+check("注册第一个账号（owner + 恢复码）",
+      status == 200 and body.get("user", {}).get("role") == "owner" and body.get("recovery_code") and cookie.startswith("agent_auth="),
+      str(body)[:300])
+recovery = body.get("recovery_code") or ""
+
+status, body = jcall("GET", "/api/auth/status", token=None)
+check("注册后自动启用且关闭注册", body.get("enabled") is True and body.get("users") == 1 and body.get("register_open") is False, str(body)[:200])
+
+status, _, _ = hcall("GET", "/api/sessions")
+check("没凭证读会话被拦", status == 401, str(status))
+status, _, _ = hcall("GET", "/api/sessions", headers={"Cookie": cookie})
+check("Cookie 能进", status == 200, str(status))
+
+status, body, _ = hcall("GET", "/api/auth/me", headers={"Cookie": cookie})
+check("me 返回账号", status == 200 and body.get("me", {}).get("email") == "smoke@example.com", str(body)[:200])
+
+status, body, _ = hcall("POST", "/api/auth/login", {"email": "smoke@example.com", "password": "wrong-pass"})
+check("错密码 401", status == 401, str(body)[:200])
+
+status, body, headers = hcall("POST", "/api/auth/login", {"email": "smoke@example.com", "password": "SmokePass!2026"})
+login_cookie = cookie_of(headers)
+check("登录下发 Cookie", status == 200 and login_cookie.startswith("agent_auth="), str(body)[:200])
+
+status, body, _ = hcall("POST", "/api/auth/keys", {"name": "smoke-key"}, headers={"Cookie": login_cookie})
+key = body.get("key") or ""
+check("生成 API 密钥", status == 200 and key.startswith("ak_"), str(body)[:200])
+
+status, _, _ = hcall("GET", "/api/sessions", headers={"Authorization": f"Bearer {key}"})
+check("Bearer 密钥可用", status == 200, str(status))
+status, _, _ = hcall("GET", "/api/sessions", headers={"X-API-Token": key})
+check("X-API-Token 当密钥可用", status == 200, str(status))
+
+status, body, _ = hcall("GET", "/api/auth/keys", headers={"Cookie": login_cookie})
+key_id = ((body.get("keys") or [{}])[0] or {}).get("id") or ""
+status, body, _ = hcall("DELETE", f"/api/auth/keys/{key_id}", headers={"Cookie": login_cookie})
+check("吊销密钥", status == 200 and body.get("ok") is True, str(body)[:200])
+status, _, _ = hcall("GET", "/api/sessions", headers={"Authorization": f"Bearer {key}"})
+check("吊销后密钥失效", status == 401, str(status))
+
+status, body, headers = hcall("POST", "/api/auth/forgot", {"email": "smoke@example.com"})
+check("忘记密码列出恢复码", status == 200 and "recovery" in (body.get("methods") or []), str(body)[:200])
+
+status, body, _ = hcall("POST", "/api/auth/reset", {"email": "smoke@example.com", "code": recovery, "new": "NewSmoke!2026"})
+check("恢复码重置成功并换新码", status == 200 and body.get("recovery_code") and body["recovery_code"] != recovery, str(body)[:200])
+status, _, _ = hcall("GET", "/api/sessions", headers={"Cookie": login_cookie})
+check("重置后旧 Cookie 失效", status == 401, str(status))
+status, body, headers = hcall("POST", "/api/auth/login", {"email": "smoke@example.com", "password": "NewSmoke!2026"})
+check("新密码能登录", status == 200 and cookie_of(headers).startswith("agent_auth="), str(body)[:200])
+
+status, body, _ = hcall("GET", "/api/auth/google/config", headers={"Cookie": cookie_of(headers)})
+check("Google 默认未配置", status == 200 and body.get("on") is False, str(body)[:200])
+
+# 连续错 5 次锁 15 分钟
+for _ in range(5):
+    hcall("POST", "/api/auth/login", {"email": "smoke@example.com", "password": "bad-pass"})
+status, body, _ = hcall("POST", "/api/auth/login", {"email": "smoke@example.com", "password": "bad-pass"})
+check("连错 5 次后锁定 429", status == 429, str(body)[:200])
+status, body, _ = hcall("POST", "/api/auth/login", {"email": "smoke@example.com", "password": "NewSmoke!2026"})
+check("锁定期间正确密码也 429", status == 429, str(body)[:200])
+
+# /ui 未登录 302 到 /login
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+opener = urllib.request.build_opener(_NoRedirect)
+try:
+    opener.open(f"http://127.0.0.1:{PORT}/ui", timeout=30)
+    ui_status = 200
+except urllib.error.HTTPError as exc:
+    ui_status = exc.code
+check("/ui 未登录 302 到 /login", ui_status == 302, str(ui_status))
+
 # ---- 上传 / 预览 / 静态文件 ----
 png = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
@@ -242,10 +348,13 @@ png = (
 status, body = jcall("POST", "/api/ui/upload", {"name": "dot.png", "data_url": "data:image/png;base64," + png})
 check("upload image", body.get("ok") is True and body.get("url", "").startswith("/files/uploads/"), str(body)[:300])
 if body.get("url"):
-    status, _ = call("GET", body["url"], token=None)
+    status, _ = call("GET", body["url"])
     check("upload served", status == 200)
+    status, _, _ = hcall("GET", body["url"])
+    check("media 无凭证被拦", status == 401, str(status))
     req = urllib.request.Request(
-        f"http://127.0.0.1:{PORT}{body['url']}", headers={"Range": "bytes=0-99"}
+        f"http://127.0.0.1:{PORT}{body['url']}",
+        headers={"Range": "bytes=0-99", "X-API-Token": "smoke-token"},
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -264,9 +373,10 @@ check("preview markdown", body.get("suffix") == ".md" and "标题" in body.get("
 check("preview blocks escape", jcall("GET", "/api/ui/preview?path=../data/providers.json")[0] == 400)
 
 for asset in ("/ui", "/ui/app.css", "/ui/core.js", "/ui/sessions.js", "/ui/canvas.js", "/ui/chat.js",
-               "/ui/providers.js", "/ui/settings.js", "/ui/tts.js", "/ui/schedules.js"):
+               "/ui/providers.js", "/ui/settings.js", "/ui/tts.js", "/ui/schedules.js",
+               "/ui/account.js", "/ui/login.js", "/login", "/ui/login.html"):
     status, _ = call("GET", asset, token=None)
-    if status != 200:
+    if status not in (200, 302):
         check("static " + asset, False, str(status))
         break
 else:

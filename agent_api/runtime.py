@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from .config import Settings, settings as default_settings
@@ -31,6 +32,7 @@ class Runtime:
         self.plugins: Any = None
         self.schedules: Any = None
         self.cookie_store: Any = None
+        self.auth: Any = None
         self.registry: ToolRegistry | None = None
 
 
@@ -68,6 +70,9 @@ def create_runtime(settings: Settings | None = None) -> Runtime:
     runtime.workflows = WorkflowEngine(runtime, st.workflows_dir)
     runtime.plugins = PluginManager(st)
     runtime.registry = build_registry(runtime)
+    from .auth import AuthService
+
+    runtime.auth = AuthService(st)
     runtime.schedules = ScheduleStore(runtime)
     runtime.schedules.start()
     logger.info(
@@ -78,5 +83,11 @@ def create_runtime(settings: Settings | None = None) -> Runtime:
         len(runtime.registry.names()),
         st.max_subagents,
         len(runtime.schedules.list()),
+    )
+    logger.info(
+        "auth | mode=%s enabled=%s users=%d",
+        (os.getenv("AUTH_MODE") or "auto"),
+        runtime.auth.enabled(),
+        len(runtime.auth.users()),
     )
     return runtime
