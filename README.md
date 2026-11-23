@@ -17,7 +17,8 @@
 | 删东西有高危授权吗？ | 有闸门 `guard`：静态规则 + 破坏面估算 + 受保护目录，命中就拒绝执行，回一句「为什么危险」，你明确同意后模型带 `confirm=true` 才会真跑 |
 | 能自己长能力吗？ | 有插件系统，10 个工具（`plugin_create` / `validate` / `enable` / `update` / `reload` / `disable` / `delete` / `list` / `read`），Agent 自己写 `.py` 进去就能多出工具 |
 | 别人打开我的地址也能用？ | 建了账号就要登录；还支持 Google 登录、给脚本发 API 密钥 |
-| 忘了密码怎么办？ | 用绑定的 Google 做身份认证，或用注册时给的恢复码，不依赖发邮件 |
+| 忘了密码怎么办？ | 用手机上的身份验证器（Google Authenticator）输 6 位码，或用绑定的 Google，或用注册时给的恢复码，不依赖发邮件 |
+| 能用手机上的身份验证器吗？ | 能：账号与安全里点「开始绑定」，扫二维码（或手输密钥），之后登录要密码 + 6 位动态码 |
 | 能不能出声？ | 有 TTS：`speak_text` 工具 + 网页「语音合成」+ 终端 `/say`，产物是能直接播的音频 |
 | 能不能自己按时干活？ | 有定时任务：cron 表达式到点自动跑一句话或一个工作流，网页/终端/Agent 三处都能建 |
 | 会话都是「无标题」？ | 首轮对话后按首句自动起标题（`_guess_title`），不再是清一色无标题 |
@@ -104,10 +105,31 @@ termux-wake-lock
 
 点登录页「忘记密码？」，填邮箱，会告诉你这个账号有哪些可用方式：
 
-1. **Google 身份认证**（推荐）：跳 Google 授权 → 验证你确实是这个 Google 账号的主人 → 回到本站，拿一张 10 分钟有效、只能用一次的重置票 → 设新密码。全程不需要 SMTP，也不用发邮件。
-2. **恢复码**：输入注册时那串 → 设新密码。旧恢复码立刻作废，同时给你一串新的。
+1. **身份验证器（Google Authenticator，推荐）**：输入手机上的 6 位动态码（或一个没用过的备用码）→ 直接设新密码。
+2. **Google 身份认证**：跳 Google 授权 → 验证你确实是这个 Google 账号的主人 → 回到本站，拿一张 10 分钟有效、只能用一次的重置票 → 设新密码。全程不需要 SMTP。
+3. **恢复码**：输入注册时那串 → 设新密码。旧恢复码立刻作废，同时给你一串新的。
 
 重置成功会**把所有设备下线**（包括当前浏览器），必须重新登录 —— 这是故意的。
+
+### 身份验证器（Google Authenticator）
+
+这是最省事的一条：不依赖 Google 客户端 ID，也不用发邮件。
+
+绑定：
+
+1. 设置 → 账号与安全 → 身份验证器 → 「开始绑定（生成二维码）」
+2. 手机装 Google Authenticator（或任意兼容 TOTP 的应用：Aegis、1Password、Microsoft Authenticator 都行）
+3. 扫页面上的二维码；扫不动就点「手动输入」填那串 32 位密钥（类型选「基于时间」）
+4. 输入手机上出现的 6 位码，点「确认启用」
+5. 页面会给你 **10 个备用码**（`XXXX-XXXX`），只显示这一次，抄下来 —— 手机丢了就靠它
+
+启用后：
+
+- **登录**变成两步：密码 → 6 位动态码。同一个码不能重复用（防止重放）
+- **忘记密码**多了一条：输 6 位码（或备用码）直接设新密码，不需要邮件、不需要 Google
+- 备用码**每个只能用一次**；用完了在「账号与安全」里重新生成（要输一次当前动态码）
+
+实现细节：标准 TOTP（HMAC-SHA1、30 秒一格、6 位、前后各容忍一格时钟差），二维码由项目自带的纯 Python 编码器生成（不联网、不调用第三方服务）。
 
 ### Google 登录怎么配
 
@@ -463,6 +485,12 @@ Agent 侧的工具：`plugin_list` `plugin_create` `plugin_update` `plugin_read`
 | DELETE | `/api/auth/keys/{id}` | 吊销某个密钥 |
 | GET | `/api/auth/devices` | 登录中的设备 |
 | GET / POST | `/api/auth/google/config` | Google 客户端配置（owner） |
+| POST | `/api/auth/totp/setup` | 生成 TOTP 密钥 + 二维码 + otpauth 链接 |
+| POST | `/api/auth/totp/enable` | 输 6 位码确认启用，返回 10 个备用码 |
+| POST | `/api/auth/totp/disable` | 关闭两步验证（6 位码或密码确认） |
+| POST | `/api/auth/totp/backup` | 重新生成备用码 |
+| POST | `/api/auth/login/totp` | 密码通过后的第二步：交 6 位码换 Cookie |
+| POST | `/api/auth/reset/totp` | 用 6 位码 / 备用码重置密码 |
 | GET / POST | `/api/ui/media`、`/api/ui/media/{kind}` | 图片/视频生成配置（`kind=image\|video`） |
 | POST | `/api/ui/media/{kind}/generate` | 手动试生成，产物落 `workspace/media/` |
 | POST | `/api/ui/upload` | 附件上传（base64 data_url，≤8MB） |
@@ -609,7 +637,8 @@ agent-api/
 │  ├─ media.py                # 图片与视频生成（三种轮询形状）
 │  ├─ tts.py                  # 语音合成（/audio/speech，二进制直收）
 │  ├─ schedules.py            # 定时任务：cron 解析 + 调度线程 + 执行
-│  ├─ auth.py                 # 账号：scrypt 密码、Cookie 会话、API 密钥、Google OAuth
+│  ├─ auth.py                 # 账号：scrypt 密码、Cookie 会话、API 密钥、TOTP、Google OAuth
+│  ├─ qr.py                   # 纯 Python 二维码（给身份验证器扫码用）
 │  ├─ auth_api.py             # /api/auth/* 路由
 │  ├─ search.py               # 五种搜索实现
 │  ├─ net.py                  # urllib 封装 + 真实错误回传
@@ -638,7 +667,7 @@ agent-api/
 python3 scripts/smoke_test.py
 ```
 
-临时沙箱里跑一遍：账号体系（注册 / 登录 / 密钥 / 恢复码重置 / 锁定）、鉴权、文件读写、路径逃逸、Python 执行与超时、Cookie、Skill 扫描、Mock 对话、运行时改提示词、载入 Skill、3 子 Agent 并发 + 第 4 个拒绝、工作流、SSE 与思考流、提供商目录/拉模型/切换/清理、搜索与图片视频配置、上传、Markdown 预览越界、全部前端静态资源。
+临时沙箱里跑一遍：账号体系（注册 / 登录 / 密钥 / 恢复码重置 / 身份验证器 / 锁定）、鉴权、文件读写、路径逃逸、Python 执行与超时、Cookie、Skill 扫描、Mock 对话、运行时改提示词、载入 Skill、3 子 Agent 并发 + 第 4 个拒绝、工作流、SSE 与思考流、提供商目录/拉模型/切换/清理、搜索与图片视频配置、上传、Markdown 预览越界、全部前端静态资源。
 
 ---
 

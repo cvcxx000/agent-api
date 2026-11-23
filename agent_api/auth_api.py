@@ -61,6 +61,8 @@ def mount_auth(router: Router, runtime: Any) -> None:
     def login(request: Request, params: dict[str, str]) -> Response:
         body = request.json()
         result = _svc(request).login(body, request)
+        if result.get("totp_required"):
+            return Response(200, {"ok": True, **result}, headers=dict(COOKIE_ATTRS))
         return _ok({"user": result["user"]}, cookie_for(result["token"]))
 
     def key_login(request: Request, params: dict[str, str]) -> Response:
@@ -149,6 +151,46 @@ def mount_auth(router: Router, runtime: Any) -> None:
         ident = auth.require(request)
         return Response(200, {"ok": True, **auth.google_configure(request.json(), ident)})
 
+
+    # ---- 身份验证器（Google Authenticator） ----
+    def totp_setup(request: Request, params: dict[str, str]) -> Response:
+        auth = _svc(request)
+        ident = auth.require(request)
+        return Response(200, {"ok": True, **auth.totp_setup(_uid(auth, ident))})
+
+    def totp_enable(request: Request, params: dict[str, str]) -> Response:
+        auth = _svc(request)
+        ident = auth.require(request)
+        body = request.json()
+        return Response(200, {"ok": True, **auth.totp_enable(_uid(auth, ident), str(body.get("code") or ""))})
+
+    def totp_disable(request: Request, params: dict[str, str]) -> Response:
+        auth = _svc(request)
+        ident = auth.require(request)
+        body = request.json()
+        return Response(200, {"ok": True, **auth.totp_disable(
+            _uid(auth, ident), str(body.get("code") or ""), str(body.get("password") or ""),
+        )})
+
+    def totp_backup(request: Request, params: dict[str, str]) -> Response:
+        auth = _svc(request)
+        ident = auth.require(request)
+        body = request.json()
+        return Response(200, {"ok": True, **auth.totp_backup_codes(_uid(auth, ident), str(body.get("code") or ""))})
+
+    def login_totp(request: Request, params: dict[str, str]) -> Response:
+        body = request.json()
+        result = _svc(request).login_totp(str(body.get("ticket") or ""), str(body.get("code") or ""), request)
+        return _ok({"user": result["user"]}, cookie_for(result["token"]))
+
+    def reset_totp(request: Request, params: dict[str, str]) -> Response:
+        body = request.json()
+        result = _svc(request).reset_with_totp(
+            str(body.get("email") or ""), str(body.get("code") or ""),
+            str(body.get("new") or body.get("new_password") or ""),
+        )
+        return _ok(result)
+
     # ---- 密钥 / 设备 ----
     def keys_list(request: Request, params: dict[str, str]) -> Response:
         auth = _svc(request)
@@ -191,6 +233,8 @@ def mount_auth(router: Router, runtime: Any) -> None:
     router.add("POST", "/api/auth/forgot", forgot, auth=False)
     router.add("POST", "/api/auth/reset", reset, auth=False)
     router.add("POST", "/api/auth/google/reset", google_reset, auth=False)
+    router.add("POST", "/api/auth/login/totp", login_totp, auth=False)
+    router.add("POST", "/api/auth/reset/totp", reset_totp, auth=False)
     router.add("GET", "/api/auth/google/start", google_start, auth=False)
     router.add("GET", "/api/auth/google/callback", google_callback, auth=False)
 
@@ -206,3 +250,7 @@ def mount_auth(router: Router, runtime: Any) -> None:
     router.add("GET", "/api/auth/devices", devices, auth=True)
     router.add("GET", "/api/auth/google/config", google_config, auth=True)
     router.add("POST", "/api/auth/google/config", google_config_save, auth=True)
+    router.add("POST", "/api/auth/totp/setup", totp_setup, auth=True)
+    router.add("POST", "/api/auth/totp/enable", totp_enable, auth=True)
+    router.add("POST", "/api/auth/totp/disable", totp_disable, auth=True)
+    router.add("POST", "/api/auth/totp/backup", totp_backup, auth=True)

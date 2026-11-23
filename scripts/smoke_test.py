@@ -29,6 +29,7 @@ os.environ["DATA_DIR"] = str(SMOKE / "data")
 os.environ["WORKFLOWS_DIR"] = str(ROOT / "workflows")
 os.environ["SKILLS_DIRS"] = str(ROOT / "skills")
 
+from agent_api.auth import totp_code, totp_next_code  # noqa: E402
 from agent_api.runtime import create_runtime  # noqa: E402
 from agent_api.server import build_server  # noqa: E402
 
@@ -317,15 +318,57 @@ check("重置后旧 Cookie 失效", status == 401, str(status))
 status, body, headers = hcall("POST", "/api/auth/login", {"email": "smoke@example.com", "password": "NewSmoke!2026"})
 check("新密码能登录", status == 200 and cookie_of(headers).startswith("agent_auth="), str(body)[:200])
 
-status, body, _ = hcall("GET", "/api/auth/google/config", headers={"Cookie": cookie_of(headers)})
+cookie2 = cookie_of(headers)
+status, body, _ = hcall("GET", "/api/auth/google/config", headers={"Cookie": cookie2})
 check("Google 默认未配置", status == 200 and body.get("on") is False, str(body)[:200])
+
+# ---- 身份验证器（Google Authenticator / TOTP）----
+status, body, _ = hcall("POST", "/api/auth/totp/setup", {}, headers={"Cookie": cookie2})
+secret = body.get("secret") or ""
+check("生成 TOTP 密钥 + 二维码",
+      status == 200 and len(secret) == 32 and "<svg" in (body.get("svg") or "") and (body.get("uri") or "").startswith("otpauth://totp/"),
+      str(body)[:200])
+status, body, _ = hcall("POST", "/api/auth/totp/enable", {"code": totp_code(secret)}, headers={"Cookie": cookie2})
+check("错误/正确验证码启用", status == 200 and len(body.get("backup_codes") or []) == 10, str(body)[:200])
+backup = (body.get("backup_codes") or [""])[0]
+backup2 = (body.get("backup_codes") or ["", ""])[1]
+
+status, body, _ = hcall("POST", "/api/auth/totp/enable", {"code": "000000"}, headers={"Cookie": cookie2})
+check("验证码错不能启用/覆盖", status in (400, 401) or body.get("ok") is False, str(body)[:200])
+
+status, body, _ = hcall("POST", "/api/auth/login", {"email": "smoke@example.com", "password": "NewSmoke!2026"})
+ticket = body.get("ticket") or ""
+check("密码对但要求两步验证", status == 200 and body.get("totp_required") is True and ticket, str(body)[:200])
+
+import time as _t
+status, body, headers = hcall("POST", "/api/auth/login/totp", {"ticket": ticket, "code": totp_next_code(secret)})
+check("6 位动态码登录成功", status == 200 and cookie_of(headers).startswith("agent_auth="), str(body)[:200])
+
+status, body, _ = hcall("POST", "/api/auth/login", {"email": "smoke@example.com", "password": "NewSmoke!2026"})
+ticket2 = body.get("ticket") or ""
+status, body, headers = hcall("POST", "/api/auth/login/totp", {"ticket": ticket2, "code": totp_code(secret)})
+check("同一动态码不能重放", status in (401, 400) and body.get("ok") is False, str(body)[:200])
+
+status, body, headers = hcall("POST", "/api/auth/login/totp", {"ticket": ticket2, "code": backup})
+check("备用码能登录（各用一次）", status == 200 and cookie_of(headers).startswith("agent_auth="), str(body)[:200])
+status, body, headers = hcall("POST", "/api/auth/login/totp", {"ticket": ticket2, "code": backup})
+check("备用码用过就失效", status == 401, str(body)[:200])
+
+status, body, _ = hcall("POST", "/api/auth/forgot", {"email": "smoke@example.com"})
+check("忘记密码列出身份验证器", status == 200 and "authenticator" in (body.get("methods") or []), str(body)[:200])
+
+status, body, _ = hcall("POST", "/api/auth/reset/totp",
+                         {"email": "smoke@example.com", "code": backup2, "new": "TotpReset!2026"})
+check("用备用码重置密码", status == 200 and body.get("recovery_code"), str(body)[:200])
+status, body, _ = hcall("POST", "/api/auth/login", {"email": "smoke@example.com", "password": "TotpReset!2026"})
+check("重置后登录仍要两步验证", status == 200 and body.get("totp_required") is True, str(body)[:200])
 
 # 连续错 5 次锁 15 分钟
 for _ in range(5):
     hcall("POST", "/api/auth/login", {"email": "smoke@example.com", "password": "bad-pass"})
 status, body, _ = hcall("POST", "/api/auth/login", {"email": "smoke@example.com", "password": "bad-pass"})
 check("连错 5 次后锁定 429", status == 429, str(body)[:200])
-status, body, _ = hcall("POST", "/api/auth/login", {"email": "smoke@example.com", "password": "NewSmoke!2026"})
+status, body, _ = hcall("POST", "/api/auth/login", {"email": "smoke@example.com", "password": "TotpReset!2026"})
 check("锁定期间正确密码也 429", status == 429, str(body)[:200])
 
 # /ui 未登录 302 到 /login

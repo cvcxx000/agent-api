@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -26,6 +27,7 @@ import logging
 import os
 import re
 import secrets
+import struct
 import threading
 import time
 from datetime import datetime
@@ -234,6 +236,7 @@ class AuthService:
             "register_open": self.register_open(),
             "allow_register": bool(cfg.get("allow_register")),
             "google_on": bool(cfg.get("google_client_id") and cfg.get("google_client_secret")),
+            "totp_users": sum(1 for u in users if u.get("totp_enabled")),
             "google_client_id": str(cfg.get("google_client_id") or ""),
             "redirect_uri": self.redirect_uri(),
         }
@@ -374,6 +377,11 @@ class AuthService:
                 "password": hash_password(password),
                 "google_sub": "",
                 "google_email": "",
+                "totp_secret": "",
+                "totp_enabled": False,
+                "totp_last_step": 0,
+                "totp_pending": "",
+                "backup_codes": [],
                 "recovery_hash": _sha(_norm_code(recovery)),
                 "api_keys": [],
                 "created_at": _now(),
@@ -411,6 +419,9 @@ class AuthService:
                 raise AuthError("邮箱或密码不对")
             user["failed"] = 0
             user["locked_until"] = 0
+            if user.get("totp_enabled"):
+                ticket = self._totp_ticket(user["id"], data)
+                return {"totp_required": True, "ticket": ticket, "user": {"email": user.get("email"), "name": user.get("name")}}
             self._save(data)
         token = self._issue_session(user, request)
         return {"user": self.public_user(user), "token": token}
@@ -478,6 +489,8 @@ class AuthService:
         methods: list[str] = []
         if user.get("google_sub"):
             methods.append("google")
+        if user.get("totp_enabled"):
+            methods.append("authenticator")
         if user.get("recovery_hash"):
             methods.append("recovery")
         return {
@@ -537,6 +550,165 @@ class AuthService:
         logger.info("账号 %s 用 Google 身份认证重置了密码", user.get("email"))
         return {"ok": True, "email": str(user.get("email") or ""), "recovery_code": new_code}
 
+
+    # ---------------- TOTP：Google Authenticator ----------------
+    def _user_record(self, user_id: str) -> dict[str, Any]:
+        user = next((u for u in self.users() if u.get("id") == user_id), None)
+        if user is None:
+            raise AuthError("登录状态失效，重新登录")
+        return user
+
+    def _totp_ticket(self, user_id: str, data: dict[str, Any]) -> str:
+        ticket = secrets.token_urlsafe(24)
+        self._prune(data)
+        data["tickets"].append({
+            "hash": _sha(ticket), "user_id": user_id, "purpose": "totp-login",
+            "expires": time.time() + 5 * 60, "tries": 0,
+        })
+        self._save(data)
+        return ticket
+
+    def totp_setup(self, user_id: str) -> dict[str, Any]:
+        user = self._user_record(user_id)
+        secret = new_totp_secret()
+        with self._lock:
+            data = self._load()
+            for item in data["users"]:
+                if item.get("id") == user_id:
+                    item["totp_pending"] = secret
+            self._save(data)
+        email = str(user.get("email") or "")
+        uri = otpauth_uri(secret, email)
+        from .qr import svg
+
+        return {"secret": secret, "uri": uri, "svg": svg(uri), "account": email, "issuer": "Agent"}
+
+    def totp_enable(self, user_id: str, code: str) -> dict[str, Any]:
+        with self._lock:
+            data = self._load()
+            user = next((u for u in data["users"] if u.get("id") == user_id), None)
+            if user is None:
+                raise AuthError("登录状态失效，重新登录")
+            secret = str(user.get("totp_pending") or "")
+            if not secret:
+                raise AppError("先生成密钥（点「开始绑定」）")
+            step = totp_verify(secret, code)
+            if step is None:
+                raise AppError("验证码不对：看手机上的 6 位数字，注意别过期（30 秒一换）")
+            backup = [_new_backup_code() for _ in range(BACKUP_CODE_COUNT)]
+            user["totp_secret"] = secret
+            user["totp_enabled"] = True
+            user["totp_last_step"] = step
+            user["totp_pending"] = ""
+            user["backup_codes"] = [{"hash": _sha(_norm_backup(c)), "used": False} for c in backup]
+            self._save(data)
+        logger.info("账号 %s 启用了身份验证器", user_id)
+        return {"ok": True, "backup_codes": backup}
+
+    def totp_disable(self, user_id: str, code: str, password: str = "") -> dict[str, Any]:
+        with self._lock:
+            data = self._load()
+            user = next((u for u in data["users"] if u.get("id") == user_id), None)
+            if user is None:
+                raise AuthError("登录状态失效，重新登录")
+            if not user.get("totp_enabled"):
+                raise AppError("还没启用身份验证器")
+            ok = False
+            if password and user.get("password") and verify_password(password, user.get("password")):
+                ok = True
+            if not ok:
+                if self._consume_totp(user, code):
+                    ok = True
+            if not ok:
+                raise AppError("验证码或密码不对")
+            user["totp_enabled"] = False
+            user["totp_secret"] = ""
+            user["totp_pending"] = ""
+            user["backup_codes"] = []
+            self._save(data)
+        logger.info("账号 %s 关掉了身份验证器", user_id)
+        return {"ok": True}
+
+    def totp_backup_codes(self, user_id: str, code: str) -> dict[str, Any]:
+        with self._lock:
+            data = self._load()
+            user = next((u for u in data["users"] if u.get("id") == user_id), None)
+            if user is None:
+                raise AuthError("登录状态失效，重新登录")
+            if not user.get("totp_enabled"):
+                raise AppError("还没启用身份验证器")
+            if not self._consume_totp(user, code):
+                raise AppError("验证码不对")
+            backup = [_new_backup_code() for _ in range(BACKUP_CODE_COUNT)]
+            user["backup_codes"] = [{"hash": _sha(_norm_backup(c)), "used": False} for c in backup]
+            self._save(data)
+        return {"ok": True, "backup_codes": backup}
+
+    def _consume_totp(self, user: dict[str, Any], code: str) -> bool:
+        """验证 6 位码或备用码；成功则就地标记（调用方负责保存）。"""
+        raw = re.sub(r"\s+", "", str(code or ""))
+        if re.fullmatch(r"\d{6}", raw):
+            step = totp_verify(str(user.get("totp_secret") or ""), raw)
+            if step is None or step <= int(user.get("totp_last_step") or 0):
+                return False
+            user["totp_last_step"] = step
+            return True
+        digest = _sha(_norm_backup(raw))
+        for item in user.get("backup_codes") or []:
+            if not item.get("used") and hmac.compare_digest(str(item.get("hash") or ""), digest):
+                item["used"] = True
+                return True
+        return False
+
+    def login_totp(self, ticket: str, code: str, request: Any) -> dict[str, Any]:
+        digest = _sha(str(ticket or "").strip())
+        with self._lock:
+            data = self._load()
+            self._prune(data)
+            found = next(
+                (t for t in data["tickets"]
+                 if t.get("purpose") == "totp-login" and hmac.compare_digest(str(t.get("hash") or ""), digest)),
+                None,
+            )
+            if found is None:
+                raise AuthError("这个登录请求过期了，重新输一次密码")
+            user = next((u for u in data["users"] if u.get("id") == found.get("user_id")), None)
+            if user is None or not user.get("totp_enabled"):
+                raise AuthError("账号状态变了，重新登录")
+            if not self._consume_totp(user, code):
+                found["tries"] = int(found.get("tries") or 0) + 1
+                if found["tries"] >= 5:
+                    data["tickets"] = [t for t in data["tickets"] if t is not found]
+                self._save(data)
+                raise AuthError("验证码不对" + ("（试太多次了，重新输密码）" if found["tries"] >= 5 else ""))
+            data["tickets"] = [t for t in data["tickets"] if t is not found]
+            self._save(data)
+        token = self._issue_session(user, request)
+        logger.info("账号 %s 通过了身份验证器", user.get("email"))
+        return {"user": self.public_user(user), "token": token}
+
+    def reset_with_totp(self, email_raw: str, code: str, new_password: str) -> dict[str, Any]:
+        email = _valid_email(email_raw)
+        with self._lock:
+            data = self._load()
+            user = next((u for u in data["users"] if u.get("email") == email), None)
+            if user is None or not user.get("totp_enabled"):
+                raise AuthError("这个账号没有启用身份验证器")
+            if not self._consume_totp(user, code):
+                self._save(data)
+                raise AuthError("验证码不对")
+            check_password_strength(new_password, email)
+            user["password"] = hash_password(new_password)
+            new_code = _new_recovery_code()
+            user["recovery_hash"] = _sha(_norm_code(new_code))
+            user["failed"] = 0
+            user["locked_until"] = 0
+            uid = user["id"]
+            data["sessions"] = [s for s in data["sessions"] if s.get("user_id") != uid]
+            self._save(data)
+        logger.info("账号 %s 用身份验证器重置了密码", email)
+        return {"ok": True, "email": email, "recovery_code": new_code}
+
     # ---------------- API 密钥 ----------------
     def create_key(self, user_id: str, name: str) -> dict[str, Any]:
         raw = "ak_" + secrets.token_urlsafe(24)
@@ -593,6 +765,8 @@ class AuthService:
             "role": user.get("role") or "user",
             "has_password": bool(user.get("password")),
             "google": bool(user.get("google_sub")),
+            "totp": bool(user.get("totp_enabled")),
+            "backup_codes_left": sum(1 for h in (user.get("backup_codes") or []) if not h.get("used")),
             "google_email": user.get("google_email") or "",
             "created_at": user.get("created_at") or "",
             "last_login": user.get("last_login") or "",
@@ -752,6 +926,11 @@ class AuthService:
                 "password": None,
                 "google_sub": sub,
                 "google_email": email,
+                "totp_secret": "",
+                "totp_enabled": False,
+                "totp_last_step": 0,
+                "totp_pending": "",
+                "backup_codes": [],
                 "recovery_hash": _sha(_norm_code(recovery)),
                 "api_keys": [], "created_at": _now(), "last_login": "",
                 "failed": 0, "locked_until": 0,
@@ -781,6 +960,79 @@ class AuthService:
         except NetError as exc:
             raise AppError(f"拿 Google 用户信息失败：{exc}") from None
         return info
+
+
+
+# ---------------- TOTP（Google Authenticator 那套） ----------------
+TOTP_STEP = 30
+TOTP_DIGITS = 6
+TOTP_WINDOW = 1  # 前后各容忍 30 秒，手机时钟差一点也能进
+BACKUP_CODE_COUNT = 10
+
+
+def new_totp_secret() -> str:
+    """20 字节随机 → base32（32 个字符，Google Authenticator 直接能吃）。"""
+    return base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
+
+
+def _hotp(secret: str, counter: int, digits: int = TOTP_DIGITS) -> str:
+    padded = secret + "=" * (-len(secret) % 8)
+    key = base64.b32decode(padded.upper(), casefold=True)
+    digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    code = (struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF) % (10 ** digits)
+    return str(code).zfill(digits)
+
+
+def totp_code(secret: str, at: float | None = None, step: int = TOTP_STEP) -> str:
+    counter = int((at if at is not None else time.time()) // step)
+    return _hotp(secret, counter)
+
+
+def totp_next_code(secret: str, at: float | None = None) -> str:
+    """下一个 30 秒窗口的码：测试与「刚用过要等下一格」的场景用。"""
+    counter = int((at if at is not None else time.time()) // TOTP_STEP) + 1
+    return _hotp(secret, counter)
+
+
+def totp_verify(secret: str, code: str, at: float | None = None) -> int | None:
+    """对得上就返回用掉的时间步（用于防重放），对不上返回 None。"""
+    code = re.sub(r"\s+", "", str(code or ""))
+    if not re.fullmatch(r"\d{6}", code):
+        return None
+    now = at if at is not None else time.time()
+    current = int(now // TOTP_STEP)
+    for delta in range(-TOTP_WINDOW, TOTP_WINDOW + 1):
+        counter = current + delta
+        if hmac.compare_digest(_hotp(secret, counter), code):
+            return counter
+    return None
+
+
+def otpauth_uri(secret: str, email: str, issuer: str = "Agent") -> str:
+    label = f"{issuer}:{email}"
+    params = {
+        "secret": secret,
+        "issuer": issuer,
+        "algorithm": "SHA1",
+        "digits": str(TOTP_DIGITS),
+        "period": str(TOTP_STEP),
+    }
+    from urllib.parse import quote
+
+    return "otpauth://totp/" + quote(label, safe="") + "?" + "&".join(
+        f"{k}={quote(str(v), safe='')}" for k, v in params.items()
+    )
+
+
+def _new_backup_code() -> str:
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # 去掉了 I/O/0/1
+    raw = "".join(secrets.choice(alphabet) for _ in range(8))
+    return raw[:4] + "-" + raw[4:]
+
+
+def _norm_backup(code: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "", str(code or "")).upper()
 
 
 class _NullRequest:

@@ -116,6 +116,85 @@ async function showAccount(){
   w.appendChild(logout);
   w.appendChild(logoutAll);
 
+
+  // ---- 身份验证器（Google Authenticator）----
+  w.appendChild(el('div', 'sect', '身份验证器（Google Authenticator）'));
+  const totpBox = el('div', '');
+  w.appendChild(totpBox);
+  function renderTotp() {
+    totpBox.innerHTML = '';
+    if (me.totp) {
+      totpBox.appendChild(el('div', 'hint2', '已启用 · 备用码还剩 ' + (me.backup_codes_left || 0) + ' 个'));
+      const regen = inputEl('', '输入当前 6 位验证码，重新生成备用码');
+      const regenBtn = mini('重新生成备用码');
+      const out1 = el('div', 'out', '');
+      regenBtn.addEventListener('click', async () => {
+        out1.textContent = '提交中…';
+        try {
+          const r = await apiPost('/api/auth/totp/backup', { code: regen.value.trim() });
+          out1.textContent = '新的备用码（只显示这一次）：' + (r.backup_codes || []).join('  ');
+        } catch (e) { out1.textContent = e.message; }
+      });
+      totpBox.appendChild(el('div', 'desc', '登录时会要 6 位动态码；手机丢了就用备用码，各用一次。'));
+      totpBox.appendChild(regen);
+      totpBox.appendChild(regenBtn);
+      totpBox.appendChild(out1);
+      const off = inputEl('', '6 位验证码或登录密码，用来确认是本人');
+      const offBtn = mini('关闭两步验证', 'danger');
+      const out2 = el('div', 'out', '');
+      offBtn.addEventListener('click', async () => {
+        if (!confirm('关掉两步验证后，只靠密码就能登录。继续？')) return;
+        out2.textContent = '提交中…';
+        const value = off.value.trim();
+        try {
+          await apiPost('/api/auth/totp/disable', /^\d{6}$/.test(value) ? { code: value } : { password: value });
+          out2.textContent = '已关闭，刷新这个面板生效';
+          me.totp = false;
+        } catch (e) { out2.textContent = e.message; }
+      });
+      totpBox.appendChild(off);
+      totpBox.appendChild(offBtn);
+      totpBox.appendChild(out2);
+      return;
+    }
+    totpBox.appendChild(el('div', 'desc', '给这个账号加一层：登录要密码 + 手机上的 6 位动态码；忘记密码也能用它重置，不依赖邮件。'));
+    const start = mini('开始绑定（生成二维码）');
+    totpBox.appendChild(start);
+    const pane = el('div', '');
+    totpBox.appendChild(pane);
+    start.addEventListener('click', async () => {
+      pane.innerHTML = '生成中…';
+      try {
+        const info = await apiPost('/api/auth/totp/setup', {});
+        pane.innerHTML = '';
+        const qr = el('div', 'qrbox');
+        qr.innerHTML = info.svg || '';
+        pane.appendChild(qr);
+        pane.appendChild(el('div', 'hint2', '用 Google Authenticator「扫描二维码」；扫不了就手动输入这串密钥（类型选「基于时间」）：'));
+        pane.appendChild(el('div', 'code', info.secret || ''));
+        pane.appendChild(el('div', 'hint2', '账号名：' + (info.uri || '').split('?')[0]));
+        const code = inputEl('', '输入刚出现的 6 位验证码');
+        const ok = mini('确认启用');
+        const out = el('div', 'out', '');
+        ok.addEventListener('click', async () => {
+          out.textContent = '提交中…';
+          try {
+            const r = await apiPost('/api/auth/totp/enable', { code: code.value.trim() });
+            me.totp = true;
+            out.textContent = '已启用。备用码（只显示这一次，抄下来）：' + (r.backup_codes || []).join('  ');
+            renderTotp();
+            const keep = el('div', 'out', '已启用。备用码（只显示这一次，抄下来）：' + (r.backup_codes || []).join('  '));
+            totpBox.appendChild(keep);
+          } catch (e) { out.textContent = e.message; }
+        });
+        pane.appendChild(code);
+        pane.appendChild(ok);
+        pane.appendChild(out);
+      } catch (e) { pane.textContent = e.message; }
+    });
+  }
+  renderTotp();
+
   // ---- Google 配置（owner）----
   if (me.role === 'owner'){
     w.appendChild(el('div', 'sect', 'Google 登录（owner）'));

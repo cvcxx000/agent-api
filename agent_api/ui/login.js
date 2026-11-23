@@ -1,10 +1,10 @@
 // 登录页：登录 / 注册 / 恢复码 / 忘记密码 / Google 票 / 密钥登录
 (function () {
   var $ = function (id) { return document.getElementById(id); };
-  var state = { status: null, forgotEmail: "", ticket: "" };
+  var state = { status: null, forgotEmail: "", ticket: "", totpTicket: "", totpEmail: "" };
 
   function show(pane) {
-    ['login', 'register', 'recovery', 'forgot', 'reset', 'ticket', 'key'].forEach(function (name) {
+    ['login', 'register', 'recovery', 'forgot', 'reset', 'ticket', 'key', 'totp', 'totp-reset'].forEach(function (name) {
       var node = $('pane-' + name);
       if (node) node.classList.toggle('on', name === pane);
     });
@@ -48,7 +48,11 @@
       return;
     }
     var st = state.status;
-    $('mode-line').textContent = st.users ? (st.users + ' 个账号 · ' + (st.google_on ? 'Google 已配' : '仅密码')) : '本机工具型 Agent';
+    var bits = [];
+    if (st.users) bits.push(st.users + ' 个账号');
+    if (st.totp_users) bits.push('两步验证');
+    if (st.google_on) bits.push('Google 已配');
+    $('mode-line').textContent = bits.length ? bits.join(' · ') : '本机工具型 Agent';
 
     if (st.enabled) {
       try {
@@ -107,7 +111,14 @@
     if (!email || !password) return msg('msg-login', '邮箱和密码都要填', false);
     this.disabled = true;
     try {
-      await post('/api/auth/login', { email: email, password: password });
+      var out = await post('/api/auth/login', { email: email, password: password });
+      if (out.totp_required) {
+        state.totpTicket = out.ticket || '';
+        state.totpEmail = email;
+        show('totp');
+        $('totp-code').focus();
+        return;
+      }
       location.href = '/';
     } catch (e) {
       msg('msg-login', e.message, false);
@@ -120,6 +131,47 @@
     var email = $('login-email').value.trim();
     location.href = '/api/auth/google/start?purpose=login' + (email ? ('&email=' + encodeURIComponent(email)) : '');
   });
+
+  // ---- 身份验证器登录 ----
+  async function totpLogin(code, field) {
+    if (!state.totpTicket) return msg('msg-totp', '这个验证请求过期了，回上一页重新输密码', false);
+    if (!code) return msg('msg-totp', '先填验证码', false);
+    quiet('msg-totp');
+    try {
+      await post('/api/auth/login/totp', { ticket: state.totpTicket, code: code });
+      location.href = '/';
+    } catch (e) {
+      msg('msg-totp', e.message, false);
+    }
+  }
+  $('btn-totp').addEventListener('click', function () {
+    totpLogin($('totp-code').value.trim());
+  });
+  $('btn-totp-backup').addEventListener('click', function () {
+    totpLogin($('totp-backup').value.trim());
+  });
+  $('totp-code').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('btn-totp').click(); });
+
+  // ---- 用身份验证器重置 ----
+  $('btn-totp-reset').addEventListener('click', async function () {
+    quiet('msg-totp-reset');
+    var body = {
+      email: $('totp-reset-email').value.trim(),
+      code: $('totp-reset-code').value.trim(),
+      new: $('totp-reset-password').value
+    };
+    if (!body.email || !body.code || !body.new) return msg('msg-totp-reset', '三项都要填', false);
+    this.disabled = true;
+    try {
+      var out = await post('/api/auth/reset/totp', body);
+      $('totp-reset-code-out').textContent = out.recovery_code || '—';
+      $('totp-reset-newcode').style.display = 'block';
+      msg('msg-totp-reset', '重置成功，所有设备已下线', true);
+    } catch (e) {
+      msg('msg-totp-reset', e.message, false);
+    } finally { this.disabled = false; }
+  });
+  $('btn-totp-reset-done').addEventListener('click', function () { location.href = '/login'; });
 
   // ---- 注册 ----
   $('btn-register').addEventListener('click', async function () {
@@ -169,10 +221,16 @@
       $('reset-email').value = out.email;
       var methods = out.methods || [];
       $('btn-google-reset').style.display = methods.indexOf('google') >= 0 ? 'flex' : 'none';
+      $('btn-totp-reset-start').style.display = methods.indexOf('authenticator') >= 0 ? 'block' : 'none';
       $('btn-use-code').style.display = methods.indexOf('recovery') >= 0 ? 'block' : 'none';
-      $('forgot-hint').textContent = methods.indexOf('google') >= 0
-        ? '这个账号绑了 Google：走 Google 身份认证，证明是本人后直接设新密码，不用发邮件。'
-        : '这个账号没绑 Google，只能用注册时给的恢复码重置。';
+      $('totp-reset-email').value = out.email;
+      if (methods.indexOf('authenticator') >= 0) {
+        $('forgot-hint').textContent = '这个账号启用了身份验证器（Google Authenticator）：输入手机上的 6 位动态码就能重置，不需要邮件。';
+      } else if (methods.indexOf('google') >= 0) {
+        $('forgot-hint').textContent = '这个账号绑了 Google：走 Google 身份认证，证明是本人后直接设新密码，不用发邮件。';
+      } else {
+        $('forgot-hint').textContent = '这个账号只能用注册时给的恢复码重置。';
+      }
       $('forgot-methods').style.display = 'block';
     } catch (e) {
       msg('msg-forgot', e.message, false);
@@ -182,6 +240,7 @@
     location.href = '/api/auth/google/start?purpose=reset&email=' + encodeURIComponent(state.forgotEmail);
   });
   $('btn-use-code').addEventListener('click', function () { show('reset'); });
+  $('btn-totp-reset-start').addEventListener('click', function () { show('totp-reset'); });
 
   // ---- 恢复码重置 ----
   $('btn-reset').addEventListener('click', async function () {

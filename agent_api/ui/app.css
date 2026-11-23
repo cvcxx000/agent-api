@@ -624,3 +624,11 @@ footer{
 .board-tools .mini2{flex:none; white-space:nowrap; padding:8px 12px}
 .board-tools .brush-dots{flex:none}
 .board-tools input[type=range]{flex:none; min-width:64px}
+
+
+/* 身份验证器二维码 */
+.qrbox{background:#fff;padding:10px;border-radius:12px;display:inline-block;margin:8px 0;line-height:0}
+.qrbox svg{width:210px;height:210px}
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:15px;letter-spacing:1px;
+  word-break:break-all;background:rgba(180,85,45,.08);border:1px dashed rgba(180,85,45,.35);
+  border-radius:10px;padding:10px 12px;margin:8px 0;user-select:all}
