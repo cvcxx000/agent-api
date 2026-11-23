@@ -108,8 +108,12 @@ async function send(){
       }
     }
   }catch (e){
+    const msg = e && e.message ? String(e.message) : String(e || '');
     if (e && e.name === 'AbortError'){ note('已停止本轮。'); }
-    else { note('出错：' + (e && e.message ? e.message : e), 'err'); }
+    else if (/ConnectionAborted|ConnectionReset|BrokenPipe|network|Failed to fetch|Load failed|网络|连接中断/i.test(msg)){
+      note('连接断了（手机休眠或切后台最容易断）。上面的内容都保留着，再发一次就行。', 'err');
+    }
+    else { note('出错：' + (msg || e), 'err'); }
   }finally{
     if (renderTimer){ clearTimeout(renderTimer); renderTimer = null; }
     busy = false;

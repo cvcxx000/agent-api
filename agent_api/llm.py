@@ -24,6 +24,10 @@ logger = logging.getLogger("agent.llm")
 _RETRY_STATUS = {429, 500, 502, 503, 504}
 
 
+class StreamAborted(Exception):
+    """上游流式连接中途断开（Errno 103 / RST 之类），且还没吐出任何内容。"""
+
+
 def rate_limit_per_minute() -> int:
     """读取 RATE_LIMIT_PER_MIN；0 = 不限速。默认 7，给额度很小的测试 Key 用。"""
     raw = (os.getenv("RATE_LIMIT_PER_MIN") or "7").strip()
@@ -167,6 +171,8 @@ class OpenAICompatibleLLM(BaseLLM):
                 last_error = f"请求超时：{exc}"
             except urllib.error.URLError as exc:
                 last_error = f"网络错误：{exc.reason}"
+            except (ConnectionError, OSError) as exc:
+                last_error = f"连接被中断：{exc}"
             except json.JSONDecodeError as exc:
                 last_error = f"模型返回不是合法 JSON：{exc}"
                 break
@@ -237,6 +243,11 @@ class OpenAICompatibleLLM(BaseLLM):
                 last_error = f"流式请求超时：{exc}"
             except urllib.error.URLError as exc:
                 last_error = f"网络错误：{exc.reason}"
+            except StreamAborted as exc:
+                last_error = f"连接被中断：{exc}"
+                logger.info("模型流被中断，重试第 %s 次", attempt + 1)
+            except (ConnectionError, OSError) as exc:
+                last_error = f"连接被中断：{exc}"
             if attempt < 2:
                 time.sleep(1.5 * (attempt + 1))
 
@@ -248,8 +259,17 @@ class OpenAICompatibleLLM(BaseLLM):
         content_parts: list[str] = []
         reason_parts: list[str] = []
         calls: dict[int, dict[str, Any]] = {}
+        aborted = {"hit": False}
 
-        for raw_line in resp:
+        def safe_lines(stream: Any) -> Any:
+            try:
+                for item in stream:
+                    yield item
+            except (ConnectionError, OSError, ValueError):
+                aborted["hit"] = True
+                return
+
+        for raw_line in safe_lines(resp):
             line = raw_line.decode("utf-8", "replace").strip()
             if not line:
                 continue
@@ -311,15 +331,26 @@ class OpenAICompatibleLLM(BaseLLM):
                 elif isinstance(args, dict):
                     rec["arguments"] += json.dumps(args, ensure_ascii=False)
 
+        if aborted["hit"]:
+            if not content_parts and not reason_parts and not calls:
+                raise StreamAborted("模型流还没吐字就断了")
+            logger.warning("模型流传输中断，保留已收到的内容（%s 字）", sum(len(x) for x in content_parts))
+
         message: dict[str, Any] = {
             "role": "assistant",
             "content": "".join(content_parts),
         }
+        if aborted["hit"]:
+            message["truncated"] = True
+            if message["content"].strip():
+                message["content"] += "\n\n……（网络中断，这条回复被截断了：直接再发一次「继续」即可）"
         reasoning = "".join(reason_parts).strip()
         if reasoning:
             message["reasoning"] = reasoning
         normalized = []
         for idx in sorted(calls):
+            if aborted["hit"]:
+                break
             rec = calls[idx]
             if not rec.get("name"):
                 continue

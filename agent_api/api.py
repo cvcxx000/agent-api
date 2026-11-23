@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import queue
 import threading
 from typing import Any
@@ -12,6 +14,23 @@ from .errors import AppError, NotFoundError
 from .sessions import Session, SubagentRecord
 from .server import Request, Response, Router, StreamResponse, json_response
 from .tools.base import ToolContext
+
+logger = logging.getLogger("agent.api")
+
+SSE_PING_SECONDS = float(os.getenv("SSE_PING_SECONDS") or 10)
+
+
+def _sse_stream(events: "queue.Queue", sentinel: Any, ping: float | None = None) -> Any:
+    interval = SSE_PING_SECONDS if ping is None else ping
+    while True:
+        try:
+            event = events.get(timeout=interval)
+        except queue.Empty:
+            yield ": ping\n\n"
+            continue
+        if event is sentinel:
+            break
+        yield f"event: {event.get('type', 'message')}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
 def _ctx(runtime: Any, session: Session | None = None) -> ToolContext:
@@ -156,6 +175,9 @@ def build_router(runtime: Any) -> Router:
                 )
             except AppError as exc:
                 events.put({"type": "error", "message": exc.message})
+            except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError, ConnectionError) as exc:
+                logger.warning("chat-stream 连接中断：%s", exc)
+                events.put({"type": "error", "message": "连接中断，这一轮没跑完。重新发一次就好。"})
             except Exception as exc:  # noqa: BLE001
                 events.put({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
             finally:
@@ -163,14 +185,7 @@ def build_router(runtime: Any) -> Router:
 
         threading.Thread(target=worker, name=f"chat-stream-{session.id}", daemon=True).start()
 
-        def generator():
-            while True:
-                event = events.get()
-                if event is sentinel:
-                    break
-                yield f"event: {event.get('type', 'message')}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-
-        return StreamResponse(generator())
+        return StreamResponse(_sse_stream(events, sentinel))
 
     router.add("POST", "/api/chat", chat)
     router.add("POST", "/api/chat/stream", chat_stream)

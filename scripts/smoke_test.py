@@ -29,7 +29,9 @@ os.environ["DATA_DIR"] = str(SMOKE / "data")
 os.environ["WORKFLOWS_DIR"] = str(ROOT / "workflows")
 os.environ["SKILLS_DIRS"] = str(ROOT / "skills")
 
+from agent_api import api as api_mod  # noqa: E402
 from agent_api.auth import totp_code, totp_next_code  # noqa: E402
+from agent_api.llm import OpenAICompatibleLLM, StreamAborted  # noqa: E402
 from agent_api.runtime import create_runtime  # noqa: E402
 from agent_api.server import build_server  # noqa: E402
 
@@ -414,6 +416,49 @@ jcall("POST", "/api/files", {"path": "notes.md", "content": "# 标题\n\n- 一\n
 status, body = jcall("GET", "/api/ui/preview?path=notes.md")
 check("preview markdown", body.get("suffix") == ".md" and "标题" in body.get("content", ""), str(body)[:200])
 check("preview blocks escape", jcall("GET", "/api/ui/preview?path=../data/providers.json")[0] == 400)
+
+
+# ---- 网络中断（Errno 103）不能把整轮变成红字报错 ----
+def _stream_with(prefix: str, boom: bool):
+    if prefix:
+        yield b'data: {"choices":[{"delta":{"content":"' + prefix.encode() + b'"}}]}\n'
+    if boom:
+        raise ConnectionAbortedError("Software caused connection abort")
+
+
+msg = OpenAICompatibleLLM._read_stream(None, _stream_with("已经想好的半句话", True), None)
+check(
+    "流中途断：保留已收到的内容 + 标注截断",
+    msg.get("truncated") is True and "半句话" in (msg.get("content") or "") and "网络中断" in (msg.get("content") or ""),
+    str(msg)[:200],
+)
+try:
+    OpenAICompatibleLLM._read_stream(None, _stream_with("", True), None)
+    empty_stop = False
+except StreamAborted:
+    empty_stop = True
+check("流一启动就断：按可重试处理，不返回空消息", empty_stop)
+
+import queue as _queue  # noqa: E402
+
+_sentinel = object()
+_q: "_queue.Queue" = _queue.Queue()
+
+
+def _feed() -> None:
+    import time as _time
+    _time.sleep(0.25)
+    _q.put({"type": "final", "content": "好"})
+    _q.put(_sentinel)
+
+
+threading.Thread(target=_feed, daemon=True).start()
+_chunks = list(api_mod._sse_stream(_q, _sentinel, ping=0.1))
+check(
+    "SSE 空闲时发 ping 心跳（手机长时间不动也不会被掐）",
+    any(c.startswith(": ping") for c in _chunks) and any('"final"' in c for c in _chunks),
+    str(_chunks)[:200],
+)
 
 for asset in ("/ui", "/ui/app.css", "/ui/core.js", "/ui/sessions.js", "/ui/canvas.js", "/ui/chat.js",
                "/ui/providers.js", "/ui/settings.js", "/ui/tts.js", "/ui/schedules.js",
