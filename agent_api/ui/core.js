@@ -431,7 +431,17 @@ function sheetWrap(){
     document.body.classList.add('guest');
     const bar = document.createElement('div');
     bar.className = 'guestBar';
-    bar.textContent = '游客模式 · 独立空间 · 到期 ' + (data.me.guest_expires_at || '—') + ' · 每分钟 1 条';
+    const label = document.createElement('span');
+    label.textContent = '游客模式 · 独立空间 · 到期 ' + (data.me.guest_expires_at || '—') + ' · 每分钟 1 条';
+    const quit = document.createElement('button');
+    quit.textContent = '退出游客登录';
+    quit.className = 'guestQuit';
+    quit.addEventListener('click', async () => {
+      try{ await apiPost('/api/auth/logout', {}); }catch (e){}
+      location.href = '/login';
+    });
+    bar.appendChild(label);
+    bar.appendChild(quit);
     document.body.insertBefore(bar, document.body.firstChild);
   }catch (e){ /* 老版本 / 没开账号体系，忽略 */ }
 })();
