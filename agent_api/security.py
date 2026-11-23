@@ -2,9 +2,26 @@
 
 from __future__ import annotations
 
+import contextvars
 from pathlib import Path
 
 from .config import settings
+
+_ACTIVE_ROOT: contextvars.ContextVar[Path | None] = contextvars.ContextVar("agent_sandbox_root", default=None)
+
+
+def active_root() -> Path:
+    """当前请求的沙箱根：游客请求会被换成他自己的目录，普通账号就是 settings.sandbox_root。"""
+    raw = _ACTIVE_ROOT.get()
+    return Path(raw).resolve() if raw else Path(settings.sandbox_root).resolve()
+
+
+def use_root(root: Path | str | None) -> contextvars.Token:
+    return _ACTIVE_ROOT.set(Path(root) if root else None)
+
+
+def reset_root(token: contextvars.Token) -> None:
+    _ACTIVE_ROOT.reset(token)
 from .errors import AppError
 
 
@@ -20,7 +37,7 @@ class AuthError(AppError):
 
 def resolve_in_sandbox(raw_path: str, root: Path | None = None) -> Path:
     """把路径限制在沙箱内，阻止 ../ 与软链接逃逸。"""
-    root = Path(root or settings.sandbox_root).resolve()
+    root = Path(root).resolve() if root else active_root()
     if raw_path is None or str(raw_path).strip() == "":
         raise PathEscapeError("path 不能为空")
     path = Path(str(raw_path).strip()).expanduser()
@@ -37,7 +54,7 @@ def resolve_in_sandbox(raw_path: str, root: Path | None = None) -> Path:
 
 def display_path(path: Path) -> str:
     try:
-        return str(Path(path).resolve().relative_to(settings.sandbox_root)).replace("\\", "/") or "."
+        return str(Path(path).resolve().relative_to(active_root())).replace("\\", "/") or "."
     except ValueError:
         return str(path)
 

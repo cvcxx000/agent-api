@@ -68,6 +68,7 @@
   .tabs{display:flex;gap:8px;margin-bottom:16px;background:var(--bg);padding:4px;border-radius:12px}
   .tabs button{margin:0;background:transparent;color:var(--ink-soft);font-size:13px;padding:8px;border-radius:9px}
   .tabs button.on{background:var(--card);color:var(--ink);box-shadow:0 1px 4px rgba(0,0,0,.06)}
+  .guestbtn{margin-top:10px;width:100%}
   .pane .alt{text-align:center;margin-top:14px;font-size:13px;color:var(--ink-soft)}
 </style>
 </head>
@@ -97,10 +98,23 @@
         <button class="ghost" id="btn-forgot">忘记密码</button>
         <button class="ghost" id="btn-key">密钥登录</button>
       </div>
+      <button class="ghost guestbtn" id="btn-guest" style="display:none">游客试用（临时匿名，到期自动清空）</button>
       <div id="msg-login" class="msg"></div>
       <p class="alt" id="login-register-hint" style="display:none">第一次用？<span class="link" data-go="register">创建账号</span></p>
     </div>
 
+
+    <!-- 游客试用 -->
+    <div class="pane" id="pane-guest">
+      <h1>游客试用</h1>
+      <p class="sub">临时匿名身份：只活在这一个 ID 里，不能升级成正式账号；有自己的独立目录（100MB），到期自动清空。</p>
+      <div class="code" id="guest-code">—</div>
+      <button class="ghost" id="btn-copy-guest">复制解锁码</button>
+      <p class="hint" id="guest-meta"></p>
+      <p class="hint">这串解锁码是 Python / 终端 的钥匙，也会写进这里；先抄下来，再进。</p>
+<button id="btn-guest-enter">我记下了，进入</button>
+      <p class="alt"><span class="link" data-go="login">返回登录</span></p>
+    </div>
     <!-- 注册 -->
     <div class="pane" id="pane-register">
       <h1 id="reg-title">创建账号</h1>

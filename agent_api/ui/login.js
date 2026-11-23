@@ -4,7 +4,7 @@
   var state = { status: null, forgotEmail: "", ticket: "", totpTicket: "", totpEmail: "" };
 
   function show(pane) {
-    ['login', 'register', 'recovery', 'forgot', 'reset', 'ticket', 'key', 'totp', 'totp-reset'].forEach(function (name) {
+    ['login', 'register', 'recovery', 'forgot', 'reset', 'ticket', 'key', 'totp', 'totp-reset', 'guest'].forEach(function (name) {
       var node = $('pane-' + name);
       if (node) node.classList.toggle('on', name === pane);
     });
@@ -62,6 +62,7 @@
     }
 
     if (st.google_on) $('btn-google-login').style.display = 'flex';
+    if (st.guest_enabled && st.users) $('btn-guest').style.display = 'block';
     if (st.register_open && !st.setup_needed) $('login-register-hint').style.display = 'block';
     if (st.setup_needed) {
       $('reg-title').textContent = '创建第一个账号';
@@ -125,6 +126,26 @@
     } finally { this.disabled = false; }
   });
   $('login-password').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('btn-login').click(); });
+
+  // ---- 游客试用 ----
+  $('btn-guest').addEventListener('click', async function () {
+    quiet('msg-login');
+    this.disabled = true;
+    try {
+      var out = await post('/api/auth/guest', {});
+      $('guest-code').textContent = out.unlock_code || '—';
+      $('guest-meta').textContent = '到期：' + (out.expires_at || '—') + ' · 空间 ' + out.quota_mb + 'MB · 每 ' + out.rate_seconds + ' 秒只能发一条';
+      state.guestCode = out.unlock_code;
+      show('guest');
+    } catch (e) {
+      msg('msg-login', e.message, false);
+    } finally { this.disabled = false; }
+  });
+  $('btn-copy-guest').addEventListener('click', async function () {
+    try { await navigator.clipboard.writeText($('guest-code').textContent); this.textContent = '已复制'; }
+    catch (e) { msg('msg-login', '浏览器不让复制，长按选中抄下来', false); }
+  });
+  $('btn-guest-enter').addEventListener('click', function () { location.href = '/'; });
 
   // ---- Google 登录 ----
   $('btn-google-login').addEventListener('click', function () {

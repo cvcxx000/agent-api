@@ -70,6 +70,27 @@ def mount_auth(router: Router, runtime: Any) -> None:
         result = _svc(request).key_login(body, request)
         return _ok({"user": result["user"]}, cookie_for(result["token"]))
 
+
+    def guest_create(request: Request, params: dict[str, str]) -> Response:
+        result = _svc(request).create_guest(request)
+        return _ok(
+            {k: v for k, v in result.items() if k != "token"},
+            cookie_for(result["token"]),
+        )
+
+    def guest_unlock(request: Request, params: dict[str, str]) -> Response:
+        auth = _svc(request)
+        ident = auth.require(request)
+        body = request.json()
+        result = auth.guest_unlock(str(body.get("code") or ""), ident)
+        return _ok(result)
+
+    def guest_state(request: Request, params: dict[str, str]) -> Response:
+        auth = _svc(request)
+        ident = auth.require(request)
+        uid = _uid(auth, ident)
+        return Response(200, {"ok": True, **auth.guest_state(uid)})
+
     def logout(request: Request, params: dict[str, str]) -> Response:
         _svc(request).logout(request)
         return _ok({"logout": True}, clear_cookie())
@@ -230,6 +251,7 @@ def mount_auth(router: Router, runtime: Any) -> None:
     router.add("POST", "/api/auth/register", register, auth=False)
     router.add("POST", "/api/auth/login", login, auth=False)
     router.add("POST", "/api/auth/key-login", key_login, auth=False)
+    router.add("POST", "/api/auth/guest", guest_create, auth=False)
     router.add("POST", "/api/auth/forgot", forgot, auth=False)
     router.add("POST", "/api/auth/reset", reset, auth=False)
     router.add("POST", "/api/auth/google/reset", google_reset, auth=False)
@@ -244,6 +266,8 @@ def mount_auth(router: Router, runtime: Any) -> None:
     router.add("POST", "/api/auth/logout", logout, auth=True)
     router.add("POST", "/api/auth/logout-all", logout_all, auth=True)
     router.add("POST", "/api/auth/password", change_password, auth=True)
+    router.add("POST", "/api/auth/guest/unlock", guest_unlock, auth=True)
+    router.add("GET", "/api/auth/guest/state", guest_state, auth=True)
     router.add("GET", "/api/auth/keys", keys_list, auth=True)
     router.add("POST", "/api/auth/keys", keys_create, auth=True)
     router.add("DELETE", "/api/auth/keys/{id}", keys_delete, auth=True)

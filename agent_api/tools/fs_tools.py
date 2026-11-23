@@ -10,6 +10,7 @@ from typing import Any
 
 from ..config import settings
 from ..errors import ToolError
+from ..security import active_root
 from ..security import display_path, resolve_in_sandbox
 from ..utils import truncate
 from .base import ToolContext, ToolRegistry
@@ -53,7 +54,7 @@ def read_file(ctx: ToolContext, args: dict[str, Any]) -> str:
     body = "\n".join(f"{i + 1}\t{lines[i]}" for i in range(start, end))
     header = (
         f"[read_file] {display_path(path)} | 总行数={len(lines)} | 展示 {start + 1}-{end} 行"
-        f" | 沙箱根={settings.sandbox_root}"
+        f" | 沙箱根={active_root()}"
     )
     result = f"{header}\n{body}"
     if end < len(lines):
@@ -69,6 +70,17 @@ def write_file(ctx: ToolContext, args: dict[str, Any]) -> str:
     if not isinstance(content, str):
         content = str(content)
     append = bool(args.get("append"))
+    if ctx.extra.get("guest"):
+        limit = int(os.getenv("GUEST_QUOTA_MB") or 100) * 1024 * 1024
+        used = 0
+        for item in active_root().rglob("*"):
+            try:
+                if item.is_file() and not item.is_symlink():
+                    used += item.stat().st_size
+            except OSError:
+                continue
+        if used + len(content.encode("utf-8")) > limit:
+            raise ToolError(f"游客空间只有 {limit // 1024 // 1024}MB，已用 {used / 1024 / 1024:.1f}MB，这次写不下了：先删点自己的文件")
     if path.parent and not path.parent.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
     if append:
@@ -156,7 +168,7 @@ def move_path(ctx: ToolContext, args: dict[str, Any]) -> str:
 
 def delete_path(ctx: ToolContext, args: dict[str, Any]) -> str:
     path = resolve_in_sandbox(_need(args, "path"))
-    if path == Path(settings.sandbox_root).resolve():
+    if path == active_root():
         raise ToolError("不能删除沙箱根目录")
     if not path.exists():
         raise ToolError(f"路径不存在：{display_path(path)}")

@@ -372,6 +372,14 @@ async function refreshProviderSummary(){
       chip.textContent = active ? (active.name + ' · ' + (j.current.model || '')) : '未配置模型';
     }
   }catch (e){
+    try{
+      const pub = await apiGet('/api/public/summary');
+      $('providerSub').textContent = pub.guest ? '游客模式 · 用设备当前模型' : '读取失败：' + e.message;
+      $('curModel').textContent = (pub.current && pub.current.model) || '未配置';
+      const chip = $('modelChip');
+      if (chip) chip.textContent = (pub.current && pub.current.model) || '未配置模型';
+      return;
+    }catch (e2){ /* 继续报原来的错 */ }
     $('providerSub').textContent = '读取失败：' + e.message;
   }
 }
@@ -412,3 +420,18 @@ function sheetWrap(){
   $('sheetWrap').innerHTML = '';
   return $('sheetWrap');
 }
+
+// 游客模式：藏起改全局设置的入口，顶部显示身份与到期
+(async function guestBadge(){
+  try{
+    const resp = await fetch('/api/auth/me', { credentials: 'same-origin' });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (!data.me || !data.me.guest) return;
+    document.body.classList.add('guest');
+    const bar = document.createElement('div');
+    bar.className = 'guestBar';
+    bar.textContent = '游客模式 · 独立空间 · 到期 ' + (data.me.guest_expires_at || '—') + ' · 每分钟 1 条';
+    document.body.insertBefore(bar, document.body.firstChild);
+  }catch (e){ /* 老版本 / 没开账号体系，忽略 */ }
+})();

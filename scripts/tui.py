@@ -465,6 +465,8 @@ COMMANDS = [
     ("/model", "选模型（真实列表，编号即切）"),
     ("/providers", "看提供商与模型"),
     ("/login", "登录：/login 邮箱 密码 [6位码]"),
+    ("/guest", "开一个临时游客（独立目录 / 100MB / 每分钟 1 条）"),
+    ("/unlock", "游客解锁 Python / 终端：/unlock 解锁码"),
     ("/logout", "退出登录"),
     ("/whoami", "看当前账号 / 身份来源"),
     ("/skills", "列出所有技能"),
@@ -558,6 +560,33 @@ def cmd_login(api: Api, state: dict, arg: str) -> None:
         print(c(MAGENTA, "恢复码（只显示这一次）：") + str(res["recovery_code"]))
 
 
+
+def cmd_guest(api: Api) -> None:
+    try:
+        res = api.post("/api/auth/guest", {})
+    except RuntimeError as exc:
+        print(c(RED, str(exc)))
+        return
+    if not api.cookie:
+        print(c(RED, "服务端没给游客发 Cookie：确认 AUTH_MODE 不是 off、GUEST_ENABLED 没关"))
+        return
+    print(c(GREEN, "游客身份已开：") + str((res.get("user") or {}).get("id") or ""))
+    print(c(BOLD, "解锁码（Python / 终端 要它，只显示这一次）：") + c(MAGENTA, str(res.get("unlock_code") or "")))
+    print(c(DIM, f"到期 {res.get('expires_at')} · 独立空间 {res.get('quota_mb')}MB · 每 {res.get('rate_seconds')} 秒一条"))
+    print(c(DIM, "只能用 /unlock 解锁码 开 Python / 终端；只能动你自己的目录，不能升级成正式账号。"))
+
+
+def cmd_unlock(api: Api, arg: str) -> None:
+    code = arg.strip()
+    if not code:
+        print(c(RED, "用法：/unlock ABCD-EFGH"))
+        return
+    try:
+        res = api.post("/api/auth/guest/unlock", {"code": code})
+    except RuntimeError as exc:
+        print(c(RED, str(exc)))
+        return
+    print(c(GREEN, "已解锁 Python / 终端") if not res.get("already") else c(DIM, "这个游客早就解锁过了。"))
 def cmd_logout(api: Api) -> None:
     try:
         api.post("/api/auth/logout", {})
@@ -578,6 +607,10 @@ def cmd_whoami(api):
     ident = data.get("identity") or {}
     if ident.get("via") == "token":
         print(c(BOLD, "身份：") + "全局 API Token（管理员通道）")
+        return
+    if me.get("guest"):
+        print(c(BOLD, "身份：") + "游客（临时匿名）")
+        print(c(DIM, "到期 " + str(me.get("guest_expires_at") or "—") + " · " + ("Python / 终端 已解锁" if me.get("guest_unlocked") else "Python / 终端 未解锁（/unlock 解锁码）")))
         return
     if not me or not me.get("email"):
         print(c(DIM, "账号体系没开：这台设备谁打开都能用。"))
@@ -864,6 +897,12 @@ def main() -> None:
             continue
         if line == "/login" or line.startswith("/login "):
             cmd_login(api, state, line[len("/login"):].strip())
+            continue
+        if line == "/guest":
+            cmd_guest(api)
+            continue
+        if line == "/unlock" or line.startswith("/unlock "):
+            cmd_unlock(api, line[len("/unlock"):].strip())
             continue
         if line == "/logout":
             cmd_logout(api)

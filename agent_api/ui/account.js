@@ -21,6 +21,52 @@ async function showAccount(){
   const ident = data.identity || {};
   const viaText = { cookie: '网页登录', key: 'API 密钥', token: '全局 API Token' }[ident.via] || ident.via || '—';
 
+
+  if (me.guest){
+    w.appendChild(el('div', 'sect', '当前账号'));
+    const kv = el('div', 'kv');
+    kv.appendChild(el('b', '', '游客（临时匿名）'));
+    kv.appendChild(el('span', '', '到期 ' + (me.guest_expires_at || '—') + ' · ' + viaText));
+    w.appendChild(kv);
+    w.appendChild(el('div', 'hint2', '只活在这一个 ID 里，不能升级成正式账号；数据到期自动清空。'));
+    const quota = el('div', 'out', '正在算空间…');
+    w.appendChild(quota);
+    apiGet('/api/auth/guest/state').then(st => {
+      quota.textContent = '独立空间 ' + st.used_mb + ' / ' + st.quota_mb + ' MB（' + st.percent + '%）';
+    }).catch(e => { quota.textContent = e.message; });
+
+    w.appendChild(el('div', 'sect', 'Python / 终端'));
+    if (me.guest_unlocked){
+      w.appendChild(el('div', 'desc', '已解锁：可以用 Python 和终端，但仍然只能动你自己的目录。'));
+    }else{
+      w.appendChild(el('div', 'desc', '游客默认不能用 Python / 终端。输入开游客时给的解锁码（也可以在终端 /unlock）后开放。'));
+      const code = inputEl('', '解锁码，例如 ABCD-EFGH');
+      w.appendChild(code);
+      const unlock = mini('解锁 Python / 终端');
+      w.appendChild(unlock);
+      const out = el('div', 'out', '');
+      w.appendChild(out);
+      unlock.addEventListener('click', async () => {
+        out.textContent = '提交中…';
+        try{
+          await apiPost('/api/auth/guest/unlock', { code: code.value.trim() });
+          out.textContent = '解锁成功，只能用在你自己的目录里。';
+          me.guest_unlocked = true;
+        }catch (e){ out.textContent = e.message; }
+      });
+    }
+
+    w.appendChild(el('div', 'sect', '游客限制'));
+    w.appendChild(el('div', 'desc', '每分钟 1 条消息 · 100MB 独立空间 · 不能派子 Agent / 插件 / 定时任务 / Cookie · 不能改任何全局设置。'));
+    const logout = mini('退出游客登录', 'danger');
+    logout.addEventListener('click', async () => {
+      try{ await apiPost('/api/auth/logout', {}); location.href = '/login'; }
+      catch (e){ alert(e.message); }
+    });
+    w.appendChild(logout);
+    return;
+  }
+
   w.appendChild(el('div', 'sect', '当前账号'));
   const kv = el('div', 'kv');
   kv.appendChild(el('b', '', me.name || me.email || '—'));

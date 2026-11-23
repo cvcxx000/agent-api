@@ -28,6 +28,7 @@ os.environ["SANDBOX_ROOT"] = str(SMOKE / "workspace")
 os.environ["DATA_DIR"] = str(SMOKE / "data")
 os.environ["WORKFLOWS_DIR"] = str(ROOT / "workflows")
 os.environ["SKILLS_DIRS"] = str(ROOT / "skills")
+os.environ["GUEST_QUOTA_MB"] = "1"
 
 import base64  # noqa: E402
 import zipfile  # noqa: E402
@@ -38,6 +39,8 @@ from agent_api.auth import totp_code, totp_next_code  # noqa: E402
 from agent_api.llm import OpenAICompatibleLLM, StreamAborted, extract_usage  # noqa: E402
 from agent_api.runtime import create_runtime  # noqa: E402
 from agent_api.server import build_server  # noqa: E402
+from agent_api.security import active_root, reset_root, use_root  # noqa: E402
+import contextvars  # noqa: E402
 
 runtime = create_runtime()
 server = build_server(runtime, "127.0.0.1", 0)
@@ -712,6 +715,90 @@ check(
     any(c.startswith(": ping") for c in _chunks) and any('"final"' in c for c in _chunks),
     str(_chunks)[:200],
 )
+
+
+# ---------------- 游客（临时 / 匿名） ----------------
+status, body, headers = hcall("POST", "/api/auth/guest", {})
+guest_cookie = cookie_of(headers)
+guest_code = body.get("unlock_code") or ""
+gid = (body.get("user") or {}).get("id") or ""
+check(
+    "游客能开：返回 Cookie + 解锁码",
+    status == 200 and guest_cookie.startswith("agent_auth=") and body.get("unlock_code")
+    and body.get("user", {}).get("guest") is True and body.get("quota_mb") == 1,
+    str(body)[:300],
+)
+
+status, body, _ = hcall("GET", "/api/auth/me", headers={"Cookie": guest_cookie})
+check("游客 /me 带 guest 与到期", status == 200 and body.get("me", {}).get("role") == "guest"
+      and body.get("me", {}).get("guest_expires_at"), str(body)[:200])
+
+status, body = jcall("GET", "/api/auth/status", token=None)
+check("游客不占正式账号 / 不影响 owner 与注册开关", body.get("users") == 1 and body.get("guests", 0) >= 1, str(body)[:200])
+
+status, body, _ = hcall("GET", "/api/providers", headers={"Cookie": guest_cookie})
+check("游客改不了提供商 / 设置", status == 403 and body.get("code") == "forbidden", str(body)[:200])
+
+status, body, _ = hcall("POST", "/api/auth/password", {"old": "", "new": "Whatever!2026"}, headers={"Cookie": guest_cookie})
+check("游客不能改密码 / 升级", status == 403, str(body)[:200])
+
+raw = b"\x89PNG\r\n\x1a\n" + b"0" * (1200 * 1024)
+status, body, _ = hcall("POST", "/api/ui/upload",
+                        {"data_url": "data:image/png;base64," + base64.b64encode(raw).decode(), "name": "big.png"},
+                        headers={"Cookie": guest_cookie})
+check("游客 100MB 配额：1MB 上限时 1.2MB 上传被拒", status == 400 and "放不下" in body.get("error", ""), str(body)[:240])
+
+secret = SMOKE / "workspace" / "secret-outside.txt"
+secret.write_text("not for guests", encoding="utf-8")
+status, body, _ = hcall("GET", "/api/files?path=../secret-outside.txt", headers={"Cookie": guest_cookie})
+check("游客读不到外面（../ 越界）", "越界" in str(body.get("result") or body.get("error")) and secret.exists(), str(body)[:240])
+
+(SMOKE / "workspace" / "media").mkdir(parents=True, exist_ok=True)
+(SMOKE / "workspace" / "media" / "secret.mp3").write_bytes(b"not for guests")
+status, body, _ = hcall("GET", "/files/media/secret.mp3", headers={"Cookie": guest_cookie})
+check("游客拿不到公共 media 里的文件", status == 404, str(body)[:200])
+
+status, body, _ = hcall("POST", "/api/files", {"path": "mine.txt", "content": "guest only"}, headers={"Cookie": guest_cookie})
+guest_file = SMOKE / "workspace" / "guests" / gid / "mine.txt"
+check("游客能写自己的目录", status == 200 and guest_file.exists() and guest_file.read_text(encoding="utf-8") == "guest only", str(body)[:200])
+check("游客文件没落到公共根", not (SMOKE / "workspace" / "mine.txt").exists(), "公共根出现 mine.txt")
+
+status, body = jcall("GET", "/api/sessions", token=None)
+status, body, _ = hcall("GET", "/api/sessions", headers={"Cookie": guest_cookie})
+check("游客会话列表是空的（看不到别人的）", status == 200 and body.get("sessions") == [], str(body)[:300])
+
+status, body, _ = hcall("POST", "/api/chat", {"message": "游客第一条"}, headers={"Cookie": guest_cookie})
+check("游客能聊天（放行到模型那一层）", body.get("code") != "guest_rate_limit" and body.get("code") != "forbidden", str(body)[:240])
+
+status, body, _ = hcall("POST", "/api/chat", {"message": "游客第二条"}, headers={"Cookie": guest_cookie})
+check("游客一分钟内第二条被 429", status == 429 and body.get("code") == "guest_rate_limit", str(body)[:240])
+
+status, body, _ = hcall("POST", "/api/auth/guest/unlock", {"code": "XXXX-XXXX"}, headers={"Cookie": guest_cookie})
+check("解锁码错 → 401", status == 401, str(body)[:200])
+status, body, _ = hcall("POST", "/api/auth/guest/unlock", {"code": guest_code}, headers={"Cookie": guest_cookie})
+check("游客用解锁码开 Python / 终端", status == 200 and body.get("ok") is True, str(body)[:200])
+status, body, _ = hcall("GET", "/api/auth/guest/state", headers={"Cookie": guest_cookie})
+check("解锁状态落盘", status == 200 and body.get("unlocked") is True, str(body)[:200])
+
+_tok = use_root(SMOKE / "workspace" / "guests" / "ctx-check")
+_ctx = contextvars.copy_context()
+_box = []
+_th = threading.Thread(target=_ctx.run, args=(lambda: _box.append(str(active_root())),))
+_th.start(); _th.join()
+reset_root(_tok)
+check("流式 worker 能继承请求级沙箱根（游客目录）", _box and _box[0].endswith("guests/ctx-check"), str(_box)[:200])
+
+data = runtime.auth._load()
+for item in data.get("users", []):
+    if item.get("guest"):
+        item["guest_expires"] = __import__("time").time() - 5
+runtime.auth._save(data)
+status, body, _ = hcall("GET", "/api/auth/me", headers={"Cookie": guest_cookie})
+check("游客到期自动失效", status == 401 and not any(u.get("guest") for u in runtime.auth.users()), str(body)[:200])
+check("游客到期目录也清掉", not (SMOKE / "workspace" / "guests" / gid).exists(), str(gid))
+
+owner = next((u for u in runtime.auth.users() if not u.get("guest")), {})
+check("正式账号仍是 owner（游客没搅乱角色）", owner.get("role") == "owner" and len(runtime.auth.accounts()) == 1, str(owner)[:200])
 
 for asset in ("/ui", "/ui/app.css", "/ui/core.js", "/ui/sessions.js", "/ui/canvas.js", "/ui/chat.js",
                "/ui/providers.js", "/ui/settings.js", "/ui/tts.js", "/ui/schedules.js",

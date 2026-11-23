@@ -108,12 +108,12 @@ def mount(router) -> None:
         import re as _re
 
         def handler(req, params):
-            from .config import settings as _settings
+            from .security import active_root
 
             name = str(params.get("name") or "")
             if not _re.fullmatch(r"[A-Za-z0-9._-]{1,120}", name):
                 return Response(404, {"ok": False, "error": "文件名不合法"})
-            sandbox = Path(_settings.sandbox_root).resolve()
+            sandbox = active_root()
             target = (sandbox / subdir / name).resolve()
             try:
                 target.relative_to(sandbox)

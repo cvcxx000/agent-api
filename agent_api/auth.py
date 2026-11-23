@@ -13,8 +13,8 @@
 - 默认 `AUTH_MODE=on`：没账号时第一屏是「创建第一个账号」，建完即生效；
   想回到「有账号才要求登录」的旧行为，设 `AUTH_MODE=auto`。
 
-边界：这是「一台设备一个主人」的工具，多个账号共用同一个 workspace /
-同一批会话，不做多租户隔离。要隔离就换 DATA_DIR / SANDBOX_ROOT 再起一个。
+边界：正式账号是「一台设备一个主人」的工具，共用 workspace 与同一批会话；
+只有游客是临时的例外 —— 每个游客有独立目录、独立会话归属，到期自动清空。
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import struct
 import threading
 import time
@@ -34,6 +35,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .config import settings
 from .errors import AppError
 from .net import NetError, UA, json_request
 from .security import AuthError
@@ -48,6 +50,56 @@ LOCK_SECONDS = 15 * 60  # 锁多久
 STATE_SECONDS = 10 * 60
 TICKET_SECONDS = 10 * 60
 MAX_SESSIONS_PER_USER = 20
+
+GUEST_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
+def _env_int(name: str, default: int, lo: int = 1, hi: int = 10**9) -> int:
+    try:
+        value = int(str(os.getenv(name) or "").strip() or default)
+    except ValueError:
+        value = default
+    return max(lo, min(hi, value))
+
+
+def guest_enabled() -> bool:
+    raw = (os.getenv("GUEST_ENABLED") or "1").strip().lower()
+    return raw not in {"0", "false", "off", "no"}
+
+
+def guest_ttl_hours() -> int:
+    return _env_int("GUEST_TTL_HOURS", 24, 1, 24 * 30)
+
+
+def guest_quota_mb() -> int:
+    return _env_int("GUEST_QUOTA_MB", 100, 1, 10240)
+
+
+def guest_rate_seconds() -> int:
+    return _env_int("GUEST_RATE_SECONDS", 60, 1, 3600)
+
+
+def guest_dir(gid: str) -> Path:
+    return Path(settings.sandbox_root) / "guests" / str(gid)
+
+
+def dir_bytes(path: Path) -> int:
+    total = 0
+    try:
+        for item in Path(path).rglob("*"):
+            try:
+                if item.is_file() and not item.is_symlink():
+                    total += item.stat().st_size
+            except OSError:
+                continue
+    except OSError:
+        return total
+    return total
+
+
+def _new_guest_code() -> str:
+    raw = "".join(secrets.choice(GUEST_CODE_ALPHABET) for _ in range(8))
+    return raw[:4] + "-" + raw[4:]
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$")
 
@@ -67,8 +119,22 @@ class TooManyError(AppError):
     code = "too_many_requests"
 
 
+class GuestRateError(TooManyError):
+    code = "guest_rate_limit"
+
+
 def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _fmt_time(value: Any) -> str:
+    try:
+        ts = float(value or 0)
+    except (TypeError, ValueError):
+        return ""
+    if ts <= 0:
+        return ""
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
 
 
 def _sha(value: str) -> str:
@@ -194,18 +260,34 @@ class AuthService:
             if len(kept) != len(data[key]):
                 changed = True
             data[key] = kept
+
+        expired_guests = [
+            str(u.get("id"))
+            for u in data.get("users", [])
+            if u.get("guest") and float(u.get("guest_expires") or 0) <= now
+        ]
+        if expired_guests:
+            changed = True
+            data["users"] = [u for u in data.get("users", []) if str(u.get("id")) not in expired_guests]
+            data["sessions"] = [s for s in data["sessions"] if str(s.get("user_id")) not in expired_guests]
+            for gid in expired_guests:
+                shutil.rmtree(guest_dir(gid), ignore_errors=True)
         return changed
 
     # ---------------- 状态 ----------------
     def _mode(self) -> str:
         return (os.getenv("AUTH_MODE") or "on").strip().lower()
 
+    def accounts(self) -> list[dict[str, Any]]:
+        """正式账号（不含游客）。游客是临时身份，不占 owner、不影响注册开关。"""
+        return [u for u in self.users() if not u.get("guest")]
+
     def users(self) -> list[dict[str, Any]]:
         with self._lock:
             return list(self._load()["users"])
 
     def has_users(self) -> bool:
-        return bool(self.users())
+        return bool(self.accounts())
 
     def enabled(self) -> bool:
         mode = self._mode()
@@ -227,11 +309,16 @@ class AuthService:
 
     def status(self) -> dict[str, Any]:
         cfg = self.config()
-        users = self.users()
+        users = self.accounts()
         return {
             "enabled": self.enabled(),
             "mode": self._mode(),
             "users": len(users),
+            "guests": sum(1 for u in self.users() if u.get("guest")),
+            "guest_enabled": guest_enabled(),
+            "guest_ttl_hours": guest_ttl_hours(),
+            "guest_quota_mb": guest_quota_mb(),
+            "guest_rate_seconds": guest_rate_seconds(),
             "setup_needed": not users,
             "register_open": self.register_open(),
             "allow_register": bool(cfg.get("allow_register")),
@@ -366,14 +453,15 @@ class AuthService:
             data = self._load()
             if any(u.get("email") == email for u in data["users"]):
                 raise AppError("这个邮箱已经注册过了，直接登录")
-            if data["users"] and not bool((data.get("config") or {}).get("allow_register")):
+            real_users = [u for u in data["users"] if not u.get("guest")]
+            if real_users and not bool((data.get("config") or {}).get("allow_register")):
                 raise ForbiddenError("注册已关闭：这台设备只允许一个账号。登录后在「账号与安全」里可以打开注册")
             recovery = _new_recovery_code()
             user = {
                 "id": new_id("usr"),
                 "email": email,
                 "name": name,
-                "role": "owner" if not data["users"] else "user",
+                "role": "owner" if not real_users else "user",
                 "password": hash_password(password),
                 "google_sub": "",
                 "google_email": "",
@@ -394,6 +482,127 @@ class AuthService:
         token = self._issue_session(user, request)
         logger.info("注册新账号：%s（%s）", email, user["role"])
         return {"user": self.public_user(user), "token": token, "recovery_code": recovery}
+
+    # ---------------- 游客（临时 / 匿名） ----------------
+    def create_guest(self, request: Any) -> dict[str, Any]:
+        """开一个只属于自己的临时身份：独立目录、不能升级、到期自动消失。"""
+        if not self.enabled():
+            raise AppError("账号体系没开，游客身份无处附着：先把 AUTH_MODE 设成 on")
+        if not guest_enabled():
+            raise ForbiddenError("这台设备关掉了游客登录（GUEST_ENABLED=0）")
+        now = time.time()
+        ttl = guest_ttl_hours()
+        quota = guest_quota_mb()
+        gid = "gst_" + secrets.token_urlsafe(9)
+        code = _new_guest_code()
+        user = {
+            "id": gid,
+            "email": "",
+            "name": "游客",
+            "role": "guest",
+            "password": "",
+            "google_sub": "",
+            "google_email": "",
+            "totp_secret": "",
+            "totp_enabled": False,
+            "totp_last_step": 0,
+            "totp_pending": "",
+            "backup_codes": [],
+            "recovery_hash": "",
+            "api_keys": [],
+            "created_at": _now(),
+            "last_login": _now(),
+            "failed": 0,
+            "locked_until": 0,
+            "guest": True,
+            "guest_expires": now + ttl * 3600,
+            "guest_unlocked": False,
+            "guest_quota_mb": quota,
+            "guest_unlock": _sha(_norm_code(code)),
+            "last_chat": 0,
+        }
+        with self._lock:
+            data = self._load()
+            self._prune(data)
+            data["users"].append(user)
+            self._save(data)
+        guest_dir(gid).mkdir(parents=True, exist_ok=True)
+        token = self._issue_session(user, request)
+        logger.info("开了游客身份：%s（%s 小时 / %sMB）", gid, ttl, quota)
+        return {
+            "user": self.public_user(user),
+            "token": token,
+            "unlock_code": code,
+            "ttl_hours": ttl,
+            "quota_mb": quota,
+            "rate_seconds": guest_rate_seconds(),
+            "expires_at": _fmt_time(user["guest_expires"]),
+            "notice": "这是临时匿名身份：只活在这一个 ID 里，不能升级成正式账号，到期自动清空。",
+        }
+
+    def guest_state(self, user_id: str) -> dict[str, Any]:
+        used = dir_bytes(guest_dir(user_id))
+        with self._lock:
+            user = next((u for u in self._load()["users"] if u.get("id") == user_id), None)
+        if not user or not user.get("guest"):
+            raise AuthError("游客身份已失效")
+        quota = int(user.get("guest_quota_mb") or guest_quota_mb()) * 1024 * 1024
+        pct = int(min(100, used * 100 / quota)) if quota else 0
+        return {
+            "user": self.public_user(user),
+            "used_bytes": used,
+            "quota_bytes": quota,
+            "used_mb": round(used / (1024 * 1024), 2),
+            "quota_mb": int(user.get("guest_quota_mb") or guest_quota_mb()),
+            "percent": pct,
+            "unlocked": bool(user.get("guest_unlocked")),
+            "rate_seconds": guest_rate_seconds(),
+        }
+
+    def guest_check(self, user_id: str, chat: bool = False) -> dict[str, Any]:
+        """校验游客是否还在有效期 / 是否超过一分钟一条 / 空间是否已满。"""
+        now = time.time()
+        with self._lock:
+            data = self._load()
+            user = next((u for u in data["users"] if u.get("id") == user_id), None)
+            if user is None or not user.get("guest"):
+                raise AuthError("游客身份已失效，重新点一次「游客试用」")
+            if float(user.get("guest_expires") or 0) <= now:
+                gid = str(user.get("id"))
+                data["users"] = [u for u in data["users"] if u.get("id") != gid]
+                data["sessions"] = [s for s in data["sessions"] if s.get("user_id") != gid]
+                self._save(data)
+                raise AuthError("游客体验已结束（到期自动清空），重新点一次「游客试用」开新的")
+            if chat:
+                quota_bytes = int(user.get("guest_quota_mb") or guest_quota_mb()) * 1024 * 1024
+                if dir_bytes(guest_dir(str(user.get("id"))) ) >= quota_bytes:
+                    raise AppError(f"游客空间 {quota_bytes // 1024 // 1024}MB 已经用满：删点自己的文件，或注册正式账号")
+                interval = guest_rate_seconds()
+                last = float(user.get("last_chat") or 0)
+                wait = int(interval - (now - last))
+                if wait > 0:
+                    raise GuestRateError(f"游客每分钟只能发一条：还要等 {wait} 秒（正式账号不限）")
+                user["last_chat"] = now
+                self._save(data)
+        return self.guest_state(user_id)
+
+    def guest_unlock(self, code: str, ident: dict[str, Any]) -> dict[str, Any]:
+        user = self.user_for_identity(ident)
+        if not user.get("guest"):
+            raise ForbiddenError("只有游客需要解锁码")
+        if not hmac.compare_digest(str(user.get("guest_unlock") or ""), _sha(_norm_code(code))):
+            raise AuthError("解锁码不对")
+        if user.get("guest_unlocked"):
+            return {"ok": True, "already": True}
+        with self._lock:
+            data = self._load()
+            item = next((u for u in data["users"] if u.get("id") == user.get("id")), None)
+            if item is None:
+                raise AuthError("游客身份已失效")
+            item["guest_unlocked"] = True
+            self._save(data)
+        logger.info("游客 %s 解锁了 Python / 终端", user.get("id"))
+        return {"ok": True, "already": False}
 
     def login(self, body: dict[str, Any], request: Any) -> dict[str, Any]:
         email = _valid_email(str(body.get("email") or ""))
@@ -458,7 +667,13 @@ class AuthService:
             self._save(data)
         return {"ok": True, "revoked": before - len(data["sessions"])}
 
+    def _guest_guard(self, user_id: str, action: str) -> None:
+        user = next((u for u in self.users() if u.get("id") == user_id), None)
+        if user and user.get("guest"):
+            raise ForbiddenError(f"游客账号不能{action}：临时身份不保存这些，注册正式账号才能用")
+
     def change_password(self, user_id: str, old: str, new: str, keep_token: str = "") -> dict[str, Any]:
+        self._guest_guard(user_id, "改密码")
         with self._lock:
             data = self._load()
             user = next((u for u in data["users"] if u.get("id") == user_id), None)
@@ -569,6 +784,7 @@ class AuthService:
         return ticket
 
     def totp_setup(self, user_id: str) -> dict[str, Any]:
+        self._guest_guard(user_id, "绑定身份验证器")
         user = self._user_record(user_id)
         secret = new_totp_secret()
         with self._lock:
@@ -584,6 +800,7 @@ class AuthService:
         return {"secret": secret, "uri": uri, "svg": svg(uri), "account": email, "issuer": "Agent"}
 
     def totp_enable(self, user_id: str, code: str) -> dict[str, Any]:
+        self._guest_guard(user_id, "绑定身份验证器")
         with self._lock:
             data = self._load()
             user = next((u for u in data["users"] if u.get("id") == user_id), None)
@@ -606,6 +823,7 @@ class AuthService:
         return {"ok": True, "backup_codes": backup}
 
     def totp_disable(self, user_id: str, code: str, password: str = "") -> dict[str, Any]:
+        self._guest_guard(user_id, "关闭身份验证器")
         with self._lock:
             data = self._load()
             user = next((u for u in data["users"] if u.get("id") == user_id), None)
@@ -630,6 +848,7 @@ class AuthService:
         return {"ok": True}
 
     def totp_backup_codes(self, user_id: str, code: str) -> dict[str, Any]:
+        self._guest_guard(user_id, "生成备用码")
         with self._lock:
             data = self._load()
             user = next((u for u in data["users"] if u.get("id") == user_id), None)
@@ -725,6 +944,8 @@ class AuthService:
             user = next((u for u in data["users"] if u.get("id") == user_id), None)
             if user is None:
                 raise AuthError("登录状态失效，重新登录")
+            if user.get("guest"):
+                raise ForbiddenError("游客账号不能新建 API 密钥：临时身份不保存密钥，注册正式账号才能用")
             user.setdefault("api_keys", []).append(entry)
             if len(user["api_keys"]) > 20:
                 raise AppError("一个账号最多 20 个密钥，先删几个")
@@ -770,6 +991,12 @@ class AuthService:
             "google_email": user.get("google_email") or "",
             "created_at": user.get("created_at") or "",
             "last_login": user.get("last_login") or "",
+            "guest": bool(user.get("guest")),
+            "guest_expires": float(user.get("guest_expires") or 0),
+            "guest_expires_at": _fmt_time(user.get("guest_expires")) if user.get("guest") else "",
+            "guest_quota_mb": int(user.get("guest_quota_mb") or 0),
+            "guest_unlocked": bool(user.get("guest_unlocked")),
+            "guest_dir": user.get("id") if user.get("guest") else "",
             "keys": [{k: v for k, v in item.items() if k != "hash"} for item in (user.get("api_keys") or [])],
         }
 

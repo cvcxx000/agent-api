@@ -13,6 +13,7 @@ from .. import documents as docs
 from .. import providers as provider_store
 from ..config import settings
 from ..errors import AppError
+from ..security import active_root, display_path, resolve_in_sandbox
 from ..security import display_path, resolve_in_sandbox
 from .base import ToolContext, ToolRegistry
 
@@ -67,7 +68,7 @@ def register(registry: ToolRegistry) -> None:
         if not can_see:
             render_note = "当前模型被判定为不支持看图，只给了文字；要用页面图去「提供商 → 视觉」打开。"
         else:
-            out_dir = settings.sandbox_root / "_docpages" / re_slug(path.stem)
+            out_dir = active_root() / "_docpages" / re_slug(path.stem)
             pdf = path
             if suffix == ".pdf":
                 result = docs.render_pdf(path, out_dir, first, last, dpi)

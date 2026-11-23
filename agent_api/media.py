@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
+from .security import active_root
 from .errors import AppError
 from .net import NetError, bearer, find_url, get_bytes, get_json, pick, post_json
 from .presets import media_preset, media_presets
@@ -150,7 +151,7 @@ def configure(settings: Settings, kind: str, body: dict[str, Any]) -> dict[str, 
 
 
 def _media_dir(settings: Settings) -> Path:
-    path = Path(settings.sandbox_root) / "media"
+    path = active_root() / "media"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -175,7 +176,7 @@ def _save(settings: Settings, payload: bytes, ext: str, kind: str) -> dict[str, 
     name = f"{kind}-{stamp}-{int(time.time() * 1000) % 1000:03d}{ext}"
     target = _media_dir(settings) / name
     target.write_bytes(payload)
-    rel = target.relative_to(Path(settings.sandbox_root)).as_posix()
+    rel = target.relative_to(active_root()).as_posix()
     return {"path": rel, "url": "/files/" + rel, "bytes": len(payload), "name": name}
 
 

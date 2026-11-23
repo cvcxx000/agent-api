@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+import contextvars
 import os
 import queue
 import threading
 from typing import Any
 
+from .security import active_root
 from . import documents
 from .agent import Agent
 from .errors import AppError, NotFoundError
@@ -24,6 +26,37 @@ logger = logging.getLogger("agent.api")
 SSE_PING_SECONDS = float(os.getenv("SSE_PING_SECONDS") or 10)
 
 
+def _ident(req: Request) -> dict[str, Any]:
+    return dict(getattr(req, "identity", None) or {})
+
+
+def _is_guest(req: Request) -> bool:
+    return str(_ident(req).get("role") or "") == "guest"
+
+
+def _owner(req: Request) -> str:
+    return str(_ident(req).get("user_id") or "") if _is_guest(req) else ""
+
+
+def _own(session: Session, req: Request) -> Session:
+    owner = _owner(req)
+    if owner and session.owner != owner:
+        raise NotFoundError(f"会话不存在：{session.id}")
+    return session
+
+
+def _guest_enter(runtime: Any, req: Request, chat: bool = False) -> dict[str, Any]:
+    """游客进门三道闸：有效期 / 一分钟一条 / 100MB 空间。返回游客状态。"""
+    ident = _ident(req)
+    if str(ident.get("role") or "") != "guest":
+        return {}
+    uid = str(ident.get("user_id") or "")
+    state = runtime.auth.guest_check(uid, chat=chat)
+    if int(state.get("used_bytes") or 0) >= int(state.get("quota_bytes") or 0):
+        raise AppError(f"游客空间 {state.get('quota_mb')}MB 已经用满：删点自己的文件，或注册正式账号")
+    return state
+
+
 def _sse_stream(events: "queue.Queue", sentinel: Any, ping: float | None = None) -> Any:
     interval = SSE_PING_SECONDS if ping is None else ping
     while True:
@@ -37,11 +70,20 @@ def _sse_stream(events: "queue.Queue", sentinel: Any, ping: float | None = None)
         yield f"event: {event.get('type', 'message')}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
-def _ctx(runtime: Any, session: Session | None = None) -> ToolContext:
+def _ctx(runtime: Any, session: Session | None = None, req: Request | None = None) -> ToolContext:
+    ident = dict(getattr(req, "identity", None) or {}) if req is not None else {}
+    guest = str(ident.get("role") or "") == "guest"
+    unlocked = False
+    if guest:
+        try:
+            unlocked = bool(runtime.auth.guest_state(str(ident.get("user_id"))).get("unlocked"))
+        except Exception:  # noqa: BLE001
+            unlocked = False
     return ToolContext(
         session=session or Session(id="api-direct", title="API 直调", persist=False),
         agent_id="api",
         allow_spawn=False,
+        extra={"guest": guest, "guest_unlocked": unlocked},
     )
 
 
@@ -94,27 +136,33 @@ def build_router(runtime: Any) -> Router:
     router.add("GET", "/api/tools", tools)
 
     # ---------------- 对话 ----------------
-    def _prepare_session(body: dict[str, Any]) -> Session:
+    def _prepare_session(body: dict[str, Any], owner: str = "") -> Session:
         session_id = body.get("session_id")
         if session_id is not None and not isinstance(session_id, str):
             raise AppError("session_id 必须是字符串")
-        try:
-            session = runtime.sessions.get_or_create(
-                session_id,
-                title=str(body.get("title") or ""),
-                system_prompt=body.get("system_prompt") if isinstance(body.get("system_prompt"), str) else None,
-            )
-        except NotFoundError:
-            logger.warning("会话 %s 不存在（可能换过 data 目录），自动新建一个", session_id)
-            session = runtime.sessions.create(
-                title=str(body.get("title") or ""),
-                system_prompt=body.get("system_prompt") if isinstance(body.get("system_prompt"), str) else None,
-            )
+        title = str(body.get("title") or "")
+        prompt = body.get("system_prompt") if isinstance(body.get("system_prompt"), str) else None
+        session: Session | None = None
+        if session_id:
+            try:
+                session = runtime.sessions.get(session_id)
+            except NotFoundError:
+                logger.warning("会话 %s 不存在（可能换过 data 目录），自动新建一个", session_id)
+                session = None
+            if session is not None:
+                if owner and session.owner != owner:
+                    raise NotFoundError(f"会话不存在：{session.id}")
+                if owner and not session.owner:
+                    session.owner = owner
+            else:
+                session = runtime.sessions.create(title=title, system_prompt=prompt, owner=owner)
+        else:
+            session = runtime.sessions.create(title=title, system_prompt=prompt, owner=owner)
         if session_id:
             if body.get("title"):
                 session.title = str(body["title"])
-            if isinstance(body.get("system_prompt"), str) and body["system_prompt"].strip():
-                session.append_system_prompt(body["system_prompt"], mode="replace")
+            if prompt and prompt.strip():
+                session.append_system_prompt(prompt, mode="replace")
         return session
 
     def _attachments(body: dict[str, Any]) -> list[dict[str, Any]]:
@@ -141,7 +189,7 @@ def build_router(runtime: Any) -> Router:
             return atts, []
         notes: list[str] = []
         out: list[dict[str, Any]] = []
-        root = Path(runtime.settings.sandbox_root)
+        root = active_root()
         for item in atts:
             raw = str(item.get("path") or "")
             suffix = Path(raw).suffix.lower()
@@ -194,11 +242,18 @@ def build_router(runtime: Any) -> Router:
         message = body.get("message")
         if not isinstance(message, str) or not message.strip():
             raise AppError("message 不能为空")
-        session = _prepare_session(body)
+        guest = _guest_enter(runtime, req, chat=True)
+        session = _prepare_session(body, owner=_owner(req))
         atts = _attachments(body)
         atts, doc_notes = _expand_documents(atts)
         max_turns = body.get("max_turns")
-        ctx = ToolContext(session=session, agent_id="main", depth=0, allow_spawn=True)
+        ctx = ToolContext(
+            session=session,
+            agent_id="main",
+            depth=0,
+            allow_spawn=not _is_guest(req),
+            extra={"guest": _is_guest(req), "guest_unlocked": bool(guest.get("unlocked"))},
+        )
         agent = Agent(runtime, session, ctx, max_turns=int(max_turns) if max_turns else None)
         result = agent.run(_with_attachments(message, atts, doc_notes), attachments=atts)
         return json_response(
@@ -219,15 +274,23 @@ def build_router(runtime: Any) -> Router:
         message = body.get("message")
         if not isinstance(message, str) or not message.strip():
             raise AppError("message 不能为空")
-        session = _prepare_session(body)
+        guest = _guest_enter(runtime, req, chat=True)
+        session = _prepare_session(body, owner=_owner(req))
         atts = _attachments(body)
         atts, doc_notes = _expand_documents(atts)
         max_turns = body.get("max_turns")
-        ctx = ToolContext(session=session, agent_id="main", depth=0, allow_spawn=True)
+        ctx = ToolContext(
+            session=session,
+            agent_id="main",
+            depth=0,
+            allow_spawn=not _is_guest(req),
+            extra={"guest": _is_guest(req), "guest_unlocked": bool(guest.get("unlocked"))},
+        )
         agent = Agent(runtime, session, ctx, max_turns=int(max_turns) if max_turns else None)
 
         events: queue.Queue = queue.Queue()
         sentinel = object()
+        root_context = contextvars.copy_context()
 
         def worker() -> None:
             try:
@@ -251,7 +314,7 @@ def build_router(runtime: Any) -> Router:
             finally:
                 events.put(sentinel)
 
-        threading.Thread(target=worker, name=f"chat-stream-{session.id}", daemon=True).start()
+        threading.Thread(target=root_context.run, args=(worker,), name=f"chat-stream-{session.id}", daemon=True).start()
 
         return StreamResponse(_sse_stream(events, sentinel))
 
@@ -260,26 +323,28 @@ def build_router(runtime: Any) -> Router:
 
     # ---------------- 会话 ----------------
     def list_sessions(req: Request, params: dict[str, str]) -> Response:
-        return json_response({"sessions": runtime.sessions.list(kind=req.q("kind"))})
+        return json_response({"sessions": runtime.sessions.list(kind=req.q("kind"), owner=_owner(req) or None)})
 
     def create_session(req: Request, params: dict[str, str]) -> Response:
         body = req.json()
         session = runtime.sessions.create(
             title=str(body.get("title") or ""),
             system_prompt=body.get("system_prompt") if isinstance(body.get("system_prompt"), str) else None,
+            owner=_owner(req),
         )
         return json_response(session.to_dict(include_messages=False))
 
     def get_session(req: Request, params: dict[str, str]) -> Response:
-        session = runtime.sessions.get(params["session_id"])
+        session = _own(runtime.sessions.get(params["session_id"]), req)
         return json_response(session.to_dict(include_messages=req.q_bool("include_messages")))
 
     def delete_session(req: Request, params: dict[str, str]) -> Response:
+        _own(runtime.sessions.get(params["session_id"]), req)
         runtime.sessions.delete(params["session_id"])
         return json_response({"ok": True, "deleted": params["session_id"]})
 
     def session_messages(req: Request, params: dict[str, str]) -> Response:
-        session = runtime.sessions.get(params["session_id"])
+        session = _own(runtime.sessions.get(params["session_id"]), req)
         limit = req.q_int("limit", 200, lo=1, hi=2000)
         return json_response(
             {
@@ -292,7 +357,7 @@ def build_router(runtime: Any) -> Router:
 
     def session_prompt(req: Request, params: dict[str, str]) -> Response:
         body = req.json()
-        session = runtime.sessions.get(params["session_id"])
+        session = _own(runtime.sessions.get(params["session_id"]), req)
         prompt = _body_str(body, "prompt")
         mode = str(body.get("mode") or "replace").lower()
         if mode not in {"replace", "append"}:
@@ -302,7 +367,7 @@ def build_router(runtime: Any) -> Router:
         return json_response({"ok": True, "chars": len(session.system_prompt), "mode": mode})
 
     def session_load_skill(req: Request, params: dict[str, str]) -> Response:
-        session = runtime.sessions.get(params["session_id"])
+        session = _own(runtime.sessions.get(params["session_id"]), req)
         name = params["name"]
         runtime.skills.refresh()
         info = runtime.skills.get(name)
@@ -330,7 +395,7 @@ def build_router(runtime: Any) -> Router:
             runtime.registry.execute(
                 "read_file",
                 {"path": req.q("path", ""), "offset": req.q_int("offset", 1, lo=1), "limit": req.q_int("limit", 500, lo=1, hi=5000)},
-                _ctx(runtime),
+                _ctx(runtime, req=req),
             )
         )
 
@@ -340,7 +405,7 @@ def build_router(runtime: Any) -> Router:
             runtime.registry.execute(
                 "write_file",
                 {"path": _body_str(body, "path"), "content": body.get("content", ""), "append": bool(body.get("append"))},
-                _ctx(runtime),
+                _ctx(runtime, req=req),
             )
         )
 
@@ -355,7 +420,7 @@ def build_router(runtime: Any) -> Router:
                     "new_string": body.get("new_string", ""),
                     "replace_all": bool(body.get("replace_all")),
                 },
-                _ctx(runtime),
+                _ctx(runtime, req=req),
             )
         )
 
@@ -364,7 +429,7 @@ def build_router(runtime: Any) -> Router:
             runtime.registry.execute(
                 "list_dir",
                 {"path": req.q("path", "."), "recursive": req.q_bool("recursive"), "max_depth": req.q_int("max_depth", 3, lo=1, hi=6)},
-                _ctx(runtime),
+                _ctx(runtime, req=req),
             )
         )
 
@@ -373,7 +438,7 @@ def build_router(runtime: Any) -> Router:
             runtime.registry.execute(
                 "grep_files",
                 {"pattern": req.q("pattern", ""), "path": req.q("path", "."), "glob": req.q("glob", "*")},
-                _ctx(runtime),
+                _ctx(runtime, req=req),
             )
         )
 
@@ -383,7 +448,7 @@ def build_router(runtime: Any) -> Router:
         if not isinstance(code, str) or not code.strip():
             raise AppError("code 不能为空")
         return _result(
-            runtime.registry.execute("run_python", {"code": code, "timeout": body.get("timeout")}, _ctx(runtime))
+            runtime.registry.execute("run_python", {"code": code, "timeout": body.get("timeout")}, _ctx(runtime, req=req))
         )
 
     router.add("GET", "/api/files", read_file)
@@ -442,7 +507,7 @@ def build_router(runtime: Any) -> Router:
         inputs = body.get("inputs") or {}
         if not isinstance(inputs, dict):
             raise AppError("inputs 必须是对象")
-        ctx = _ctx(runtime)
+        ctx = _ctx(runtime, req=req)
         session_id = body.get("session_id")
         if session_id:
             ctx = ToolContext(session=runtime.sessions.get(str(session_id)), agent_id="workflow", depth=0, allow_spawn=False)

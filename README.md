@@ -168,6 +168,19 @@ python3 scripts/tui.py --token ak_xxx
 
 **API 密钥和 `API_TOKEN` 的区别**：`API_TOKEN` 是全局管理员钥匙，一个通吃，适合完全信任的脚本；API 密钥是账号自己的，可吊销、能看出是谁在用。
 
+### 游客试用（临时匿名）
+
+登录页有一行「游客试用（临时匿名，24 小时后自动清空）」，点一下就能用，不用注册。它适合「别人临时想试一下这台设备」的场景：
+
+- **只活在它自己那一个 ID 里**：每个游客有独立目录 `workspace/guests/<gid>`，上传、读文件、生成图片 / 语音 / 视频、文档页图全都落在里面。请求进来时沙箱根会被换成这个目录（`security.active_root()`，请求级 contextvar），`../` 和绝对路径一样越不出去。
+- **不能升级成正式账号**：角色固定 `guest`，改密码 / 生成 API 密钥 / 绑身份验证器 / Google 绑定 / 改提供商和全局设置全部 403；到期自动删除账号、会话和目录。
+- **一分钟一条**：`/api/chat` 与 `/api/chat/stream` 按游客上次发言时间限流，第二条立刻 429（`code=guest_rate_limit`）。API 端也能用，适合服务器端冒烟测试。
+- **100MB 独享空间**：上传前按目录实际占用算，放不下直接拒绝；开聊前也会查一次，满了就提示删自己的文件。
+- **Python / 终端要解锁码**：开游客时返回一串 `XXXX-XXXX` 的解锁码（只显示这一次）。没解锁时 `run_python` / `run_shell` 工具直接不可见、直接调用也返回 ERROR；账号面板或终端 `/unlock 解锁码` 之后才开放，开放后仍然只能动自己的目录。
+- **其余闸门**：子 Agent、插件、定时任务、Cookie、工作流、搜索接口、`/api/execute/python` 一律不给；能用的只有聊天、会话、自己的文件、技能、上传、预览、TTS 出声。
+
+相关配置：`GUEST_ENABLED=1`（默认开；`0` 关掉）、`GUEST_TTL_HOURS=24`、`GUEST_QUOTA_MB=100`、`GUEST_RATE_SECONDS=60`。终端里 `python3 scripts/tui.py` 后直接 `/guest` 开一个，`/unlock 码` 解锁，`/whoami` 看剩余身份。
+
 ### 安全上做了什么
 
 - 密码 scrypt（n=16384, r=8, p=1）+ 随机 salt，比较用常量时间
@@ -243,10 +256,14 @@ python3 scripts/smoke_test.py    # 端到端自检
 | `ENABLE_SHELL` | **`true`** | 允许 `run_shell`（同权，都在沙箱内）。只想给 Python 就改 false |
 | `PYTHON_TIMEOUT` / `SHELL_TIMEOUT` | `60` / `60` | 单次执行超时（秒，上限 600） |
 | `DANGEROUS_CONFIRM` | `true` | 高危命令闸门开关。`false` = 关掉拦截，不建议 |
-| `SANDBOX_ROOT` | `./workspace` | 文件与执行的沙箱根 |
+| `SANDBOX_ROOT` | `./workspace` | 文件与执行的沙箱根（游客会自动换成 `guests/<gid>`） |
 | `DATA_DIR` | `./data` | 会话、Cookie、插件状态、临时脚本落盘位置 |
 | `SKILLS_DIRS` | `./skills,./workspace/.skills` | Skill 搜索目录（逗号分隔） |
 | `WORKFLOWS_DIR` | `./workflows` | 工作流目录 |
+| `GUEST_ENABLED` | `1` | 游客试用开关。`0` = 登录页不出现游客入口 |
+| `GUEST_TTL_HOURS` | `24` | 游客活多久（小时），到期自动删账号 / 会话 / 目录 |
+| `GUEST_QUOTA_MB` | `100` | 每个游客的独立空间上限（MB） |
+| `GUEST_RATE_SECONDS` | `60` | 游客两条消息的最小间隔（秒） |
 | `SYSTEM_PROMPT` / `SYSTEM_PROMPT_FILE` | 空 | 覆盖默认系统提示词 / 从文件读 |
 
 ### 限速说明（测试 Key 只有 7 次/分钟）
@@ -645,7 +662,7 @@ description: 把数据文件整理成 Markdown 报告，先校验再下结论
 
 ## 安全边界（请认真看）
 
-- **文件**：所有路径 `resolve()` 后必须位于 `SANDBOX_ROOT`，`../` 和软链接逃逸都拒绝
+- **文件**：所有路径 `resolve()` 后必须位于当前请求的沙箱根（普通账号是 `SANDBOX_ROOT`，游客是 `SANDBOX_ROOT/guests/<gid>`），`../` 和软链接逃逸都拒绝
 - **shell / Python**：都是本机代码执行，过 `guard` 闸门但**不是容器隔离**。对外暴露时务必设 `API_TOKEN`，并考虑关掉 `ENABLE_SHELL` / `ENABLE_PYTHON` 或上容器
 - **鉴权**：`API_TOKEN` 为空 = 不鉴权，这是为了方便本机调试，不是默认安全配置
 - **请求体**：超过 20MB 直接 413
@@ -701,7 +718,7 @@ agent-api/
 python3 scripts/smoke_test.py
 ```
 
-临时沙箱里跑一遍：账号体系（注册 / 登录 / 密钥 / 恢复码重置 / 身份验证器 / 锁定）、鉴权、文件读写、路径逃逸、Python 执行与超时、Cookie、Skill 扫描、Mock 对话、运行时改提示词、载入 Skill、3 子 Agent 并发 + 第 4 个拒绝、工作流、SSE 与思考流、token 用量与缓存命中、PDF/Word 抽字与页面渲染、提供商目录/拉模型/切换/清理、搜索与图片视频配置、上传、Markdown 预览越界、全部前端静态资源。
+临时沙箱里跑一遍：账号体系（注册 / 登录 / 密钥 / 恢复码重置 / 身份验证器 / 锁定）、鉴权、文件读写、路径逃逸、Python 执行与超时、Cookie、Skill 扫描、Mock 对话、运行时改提示词、载入 Skill、3 子 Agent 并发 + 第 4 个拒绝、工作流、SSE 与思考流、token 用量与缓存命中、PDF/Word 抽字与页面渲染、提供商目录/拉模型/切换/清理、搜索与图片视频配置、上传、Markdown 预览越界、游客（创建 / 隔离目录 / 100MB 配额 / 一分钟一条 / 改设置 403 / 解锁码 / 到期清空）、全部前端静态资源。
 
 它自己用随机端口，**正在 8000 跑着服务也能直接跑**（以前会把 `port=0` 当成 8000，直接撞出 `Errno 98 Address already in use`）。
 

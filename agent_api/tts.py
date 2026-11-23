@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from .security import active_root
 from typing import Any
 
 from .config import Settings
@@ -172,7 +173,7 @@ def configure(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
 
 
 def _media_dir(settings: Settings) -> Path:
-    path = Path(settings.sandbox_root) / "media"
+    path = active_root() / "media"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -184,7 +185,7 @@ def _save_audio(settings: Settings, payload: bytes, fmt: str) -> dict[str, Any]:
     name = f"tts-{stamp}-{int(time.time() * 1000) % 1000:03d}.{fmt}"
     target = _media_dir(settings) / name
     target.write_bytes(payload)
-    rel = target.relative_to(Path(settings.sandbox_root)).as_posix()
+    rel = target.relative_to(active_root()).as_posix()
     return {"path": rel, "url": "/files/" + rel, "bytes": len(payload), "name": name}
 
 

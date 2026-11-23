@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .security import active_root
 import os
 
 
@@ -227,6 +228,18 @@ def mount(router) -> None:
         return Response(200, {"ok": True, **result})
 
     # ---------------- 上传 / 预览 ----------------
+
+    def public_summary(req, params):
+        data = provider_store.load(req.runtime.settings)
+        current = data.get("current") or {}
+        ident = dict(getattr(req, "identity", None) or {})
+        return Response(200, {
+            "ok": True,
+            "current": {"model": current.get("model") or "", "base_url": current.get("base_url") or ""},
+            "providers": len(data.get("providers") or []),
+            "guest": str(ident.get("role") or "") == "guest",
+        })
+
     def ui_upload(req, params):
         import base64
         import re as _re
@@ -264,14 +277,23 @@ def mount(router) -> None:
         limit = 8 * 1024 * 1024 if suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif"} else 12 * 1024 * 1024
         if len(raw) > limit:
             raise AppError(f"文件超过 {limit // 1024 // 1024} MB")
+        ident = dict(getattr(req, "identity", None) or {})
+        if str(ident.get("role") or "") == "guest":
+            auth = getattr(req.runtime, "auth", None)
+            state = auth.guest_state(str(ident.get("user_id") or ""))
+            if int(state.get("used_bytes") or 0) + len(raw) > int(state.get("quota_bytes") or 0):
+                raise AppError(
+                    f"游客空间只有 {state.get('quota_mb')}MB，已用 {state.get('used_mb')}MB，"
+                    f"这个文件 {len(raw) / 1024 / 1024:.1f}MB 放不下：先删点自己的文件"
+                )
         settings = req.runtime.settings
-        target_dir = Path(settings.sandbox_root) / "uploads"
+        target_dir = active_root() / "uploads"
         target_dir.mkdir(parents=True, exist_ok=True)
         stem = _re.sub(r"[^A-Za-z0-9_-]+", "-", Path(str(body.get("name") or "paste")).stem).strip("-")[:24] or "paste"
         name = f"{_time.strftime('%Y%m%d-%H%M%S')}-{stem}{suffix}"
         target = target_dir / name
         target.write_bytes(raw)
-        rel = target.relative_to(Path(settings.sandbox_root)).as_posix()
+        rel = target.relative_to(active_root()).as_posix()
         return Response(
             200,
             {"ok": True, "path": rel, "url": "/files/" + rel, "bytes": len(raw), "type": "image", "suffix": suffix},
@@ -282,7 +304,7 @@ def mount(router) -> None:
         if not rel:
             raise AppError("path 不能为空")
         settings = req.runtime.settings
-        root = Path(settings.sandbox_root).resolve()
+        root = active_root()
         target = (root / rel).resolve()
         try:
             target.relative_to(root)
@@ -434,5 +456,6 @@ def mount(router) -> None:
     router.add("POST", "/api/ui/search", ui_search_set, auth=True)
     router.add("POST", "/api/ui/search/test", ui_search_test, auth=True)
     router.add("POST", "/api/ui/upload", ui_upload, auth=True)
+    router.add("GET", "/api/public/summary", public_summary, auth=True)
     router.add("GET", "/api/ui/preview", ui_preview, auth=True)
     router.add("GET", "/api/backup", backup, auth=True)

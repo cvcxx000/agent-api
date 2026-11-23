@@ -50,6 +50,7 @@ class Session:
     max_turns: int | None = None
     persist: bool = True
     usage: dict[str, int] = field(default_factory=dict)
+    owner: str = ""
 
     def to_dict(self, include_messages: bool = True) -> dict[str, Any]:
         data = {
@@ -65,6 +66,7 @@ class Session:
             "max_turns": self.max_turns,
             "message_count": len(self.messages),
             "usage": self.usage,
+            "owner": self.owner,
         }
         if include_messages:
             data["messages"] = self.messages
@@ -85,6 +87,7 @@ class Session:
             max_turns=data.get("max_turns"),
             usage=data.get("usage") or {},
             persist=data.get("persist", True),
+            owner=data.get("owner", ""),
         )
 
     def append_system_prompt(self, text: str, mode: str = "replace") -> None:
@@ -126,6 +129,7 @@ class SessionStore:
         kind: str = "main",
         parent_id: str | None = None,
         session_id: str | None = None,
+        owner: str = "",
     ) -> Session:
         sid = session_id or new_id("sess")
         if self._file(sid).exists():
@@ -139,6 +143,7 @@ class SessionStore:
             parent_id=parent_id,
             created_at=ts,
             updated_at=ts,
+            owner=owner,
         )
         with self._lock:
             self._cache[sid] = session
@@ -178,7 +183,7 @@ class SessionStore:
             return self.get(session_id)
         return self.create(title=title, system_prompt=system_prompt)
 
-    def list(self, kind: str | None = None) -> list[dict[str, Any]]:
+    def list(self, kind: str | None = None, owner: str | None = None) -> list[dict[str, Any]]:
         items: list[Session] = []
         for path in self._dir.glob("*.json"):
             try:
@@ -186,6 +191,8 @@ class SessionStore:
             except (OSError, json.JSONDecodeError, KeyError):
                 continue
             if kind and session.kind != kind:
+                continue
+            if owner and session.owner != owner:
                 continue
             if session.title in _EMPTY_TITLES:
                 guessed = _guess_title(session.messages)

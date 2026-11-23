@@ -14,6 +14,7 @@ from typing import Any
 
 from ..config import settings
 from ..errors import ToolError
+from ..security import active_root
 from ..security import display_path, resolve_in_sandbox
 from .base import ToolContext, ToolRegistry
 
@@ -61,7 +62,7 @@ def _exec(cmd: list[str], timeout: float = 180.0) -> tuple[int, str, str]:
     try:
         proc = subprocess.run(
             cmd,
-            cwd=str(settings.sandbox_root),
+            cwd=str(active_root()),
             capture_output=True,
             text=True,
             encoding="utf-8",

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import providers as provider_store
+from .security import active_root
 from .errors import AgentCancelled, LLMError
 from .sessions import Session
 from .tools.base import ToolContext
@@ -122,7 +123,7 @@ class Agent:
                 suffix = Path(rel).suffix.lower()
                 if suffix not in _MIME:
                     continue
-                target = Path(self.settings.sandbox_root) / rel
+                target = active_root() / rel
                 try:
                     raw = target.read_bytes()
                 except OSError:
@@ -140,7 +141,17 @@ class Agent:
         return str(message.get("content") or "")
 
     def _payload(self) -> list[dict[str, Any]]:
-        out: list[dict[str, Any]] = [{"role": "system", "content": self.session.system_prompt}]
+        system = self.session.system_prompt
+        extra = dict(getattr(self.ctx, "extra", None) or {})
+        if extra.get("guest"):
+            unlocked = bool(extra.get("guest_unlocked"))
+            hint = "已解锁，但同样只能动这个目录。" if unlocked else "尚未解锁：需要游客在账号面板输入解锁码；不要尝试绕过。"
+            system += (
+                "\n\n[游客模式] 你现在服务的是一个临时游客：只在 ta 自己的独立目录里活动（路径相对当前用户目录），"
+                "不能派子 Agent、不能用插件 / 定时任务 / Cookie，也不能改任何全局设置。"
+                "Python 与终端" + hint + " 每分钟只能发一条消息、空间 100MB，回答尽量短。"
+            )
+        out: list[dict[str, Any]] = [{"role": "system", "content": system}]
         for message in _trim_for_model(self.messages, self.settings.history_limit):
             clean = {k: v for k, v in message.items() if k not in {"reasoning", "attachments"}}
             if clean.get("role") == "user":

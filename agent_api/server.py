@@ -7,12 +7,13 @@ import logging
 import re
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Callable, Iterable
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .config import settings
 from .errors import AppError, NotFoundError
-from .security import check_token
+from .security import check_token, reset_root, use_root
 
 logger = logging.getLogger("agent.http")
 
@@ -103,6 +104,36 @@ def json_response(body: Any, status: int = 200) -> Response:
 Handler = Callable[[Request, dict[str, str]], Response | StreamResponse]
 
 
+GUEST_ALLOW_PREFIXES = (
+    "/health",
+    "/api/chat",
+    "/api/sessions",
+    "/api/files",
+    "/api/dir",
+    "/api/skills",
+    "/api/ui/upload",
+    "/api/public/summary",
+    "/api/ui/preview",
+    "/api/ui/tts/speak",
+    "/api/auth/me",
+    "/api/auth/whoami",
+    "/api/auth/logout",
+    "/api/auth/guest",
+    "/files/",
+)
+
+
+def guest_path_ok(path: str) -> bool:
+    clean = path.rstrip("/") or "/"
+    for prefix in GUEST_ALLOW_PREFIXES:
+        if prefix.endswith("/"):
+            if clean.startswith(prefix):
+                return True
+        elif clean == prefix or clean.startswith(prefix + "/"):
+            return True
+    return False
+
+
 class Router:
     def __init__(self) -> None:
         self._routes: list[tuple[str, re.Pattern[str], Handler, bool]] = []
@@ -120,14 +151,28 @@ class Router:
             match = regex.match(path)
             if not match:
                 continue
+            root_token = None
             if auth:
                 service = getattr(request.runtime, "auth", None)
                 if service is not None:
-                    service.require(request)
+                    ident = service.require(request)
+                    role = str((ident or {}).get("role") or "")
+                    if role == "guest":
+                        if not guest_path_ok(path):
+                            from .auth import ForbiddenError
+                            raise ForbiddenError("游客只能聊天、传文件、看自己的会话；改设置 / 密钥 / 提供商请注册正式账号")
+                        gid = str((ident or {}).get("user_id") or "")
+                        root = Path(settings.sandbox_root) / "guests" / gid
+                        root.mkdir(parents=True, exist_ok=True)
+                        root_token = use_root(root)
                 else:
                     check_token(request.header("x-api-token"))
             params = {key: unquote(value) for key, value in match.groupdict().items()}
-            return handler(request, params)
+            try:
+                return handler(request, params)
+            finally:
+                if root_token is not None:
+                    reset_root(root_token)
         raise NotFoundError(f"未知接口：{request.method} {path}")
 
 

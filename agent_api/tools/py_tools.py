@@ -12,6 +12,7 @@ from typing import Any
 
 from .. import guard
 from ..config import settings
+from ..security import active_root
 from ..errors import ToolError
 from ..utils import new_id
 from .base import ToolContext, ToolRegistry
@@ -23,7 +24,7 @@ def _runtime_env() -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUNBUFFERED"] = "1"
-    env["PYTHONPATH"] = str(settings.sandbox_root)
+    env["PYTHONPATH"] = str(active_root())
     env.pop("PYTHONSTARTUP", None)
     return env
 
@@ -32,7 +33,7 @@ def _run(cmd: list[str], timeout: float) -> tuple[int, str, str, float]:
     started = time.perf_counter()
     proc = subprocess.Popen(
         cmd,
-        cwd=str(settings.sandbox_root),
+        cwd=str(active_root()),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=_runtime_env(),
@@ -75,7 +76,7 @@ def run_python(ctx: ToolContext, args: dict[str, Any]) -> str:
         raise ToolError("code 不能为空")
     if len(code) > MAX_CODE_CHARS:
         raise ToolError(f"代码过长（>{MAX_CODE_CHARS} 字符），请拆分或写到文件里再运行")
-    hits = guard.check(code, root=settings.sandbox_root)
+    hits = guard.check(code, root=active_root())
     if hits and not args.get("confirm"):
         raise ToolError(guard.refusal("run_python", code, hits))
     timeout = max(1, min(int(args.get("timeout") or settings.python_timeout), 600))
@@ -103,7 +104,7 @@ def run_shell(ctx: ToolContext, args: dict[str, Any]) -> str:
     command = args.get("command")
     if not isinstance(command, str) or not command.strip():
         raise ToolError("command 不能为空")
-    hits = guard.check(command, root=settings.sandbox_root)
+    hits = guard.check(command, root=active_root())
     if hits and not args.get("confirm"):
         raise ToolError(guard.refusal("run_shell", command, hits))
     timeout = max(1, min(int(args.get("timeout") or settings.shell_timeout), 600))
