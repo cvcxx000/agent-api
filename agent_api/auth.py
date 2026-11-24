@@ -238,6 +238,12 @@ class AuthService:
         for key, default in empty.items():
             if not isinstance(data.get(key), type(default)):
                 data[key] = default
+        real = [u for u in data["users"] if not u.get("guest")]
+        if real and not any(u.get("role") == "owner" for u in real):
+            oldest = min(real, key=lambda u: str(u.get("created_at") or ""))
+            oldest["role"] = "owner"
+            self._save(data)
+            logger.info("账号库里没有 owner，把最早注册的 %s 提成 owner", oldest.get("email"))
         return data
 
     def _save(self, data: dict[str, Any]) -> None:
@@ -315,7 +321,6 @@ class AuthService:
         users = self.accounts()
         return {
             "enabled": self.enabled(),
-            "mode": self._mode(),
             "users": len(users),
             "guests": sum(1 for u in self.users() if u.get("guest")),
             "guest_enabled": guest_enabled(),
@@ -1156,7 +1161,7 @@ class AuthService:
                 "id": new_id("usr"),
                 "email": email,
                 "name": (name.strip()[:40] or email.split("@")[0]),
-                "role": "owner" if not data["users"] else "user",
+                "role": "owner" if not [u for u in data["users"] if not u.get("guest")] else "user",
                 "password": None,
                 "google_sub": sub,
                 "google_email": email,

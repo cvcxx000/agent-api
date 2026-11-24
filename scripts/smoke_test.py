@@ -856,6 +856,13 @@ try:
     dummy = SimpleNamespace(data_dir=_mdir)
     a = AuthService(dummy)
     check("商家版：用户能自己注册（注册开关强制开）", a.register_open() is True)
+    legacy = {"users": [{"id": "usr_old", "email": "old@shop.com", "name": "老用户", "role": "user",
+                         "created_at": "2025-01-01 00:00:00", "api_keys": []}],
+              "sessions": [], "states": [], "tickets": [], "config": {}}
+    (Path(_mdir) / "auth.json").write_text(json.dumps(legacy, ensure_ascii=False), encoding="utf-8")
+    a2 = AuthService(dummy)
+    check("老账号库没有 owner 时，最早注册的自动升成 owner",
+          a2.users()[0].get("role") == "owner", str(a2.users())[:200])
     check("商家版：会员端禁全局配置、放行聊天与上传",
           (not member_path_ok("/api/providers")) and (not member_path_ok("/api/ui/settings"))
           and member_path_ok("/api/ui/upload") and member_path_ok("/api/chat") and member_path_ok("/api/files"),

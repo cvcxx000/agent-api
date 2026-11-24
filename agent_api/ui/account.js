@@ -70,13 +70,16 @@ async function showAccount(){
   w.appendChild(el('div', 'sect', '当前账号'));
   const kv = el('div', 'kv');
   kv.appendChild(el('b', '', me.name || me.email || '—'));
-  kv.appendChild(el('span', '', (me.email || '') + ' · ' + (me.role === 'owner' ? '主人（owner）' : '成员') + ' · ' + viaText));
+  kv.appendChild(el('span', '', (me.email || '') + ' · ' + (me.role === 'owner' ? '管理员（owner）' : '会员') + ' · ' + viaText));
   w.appendChild(kv);
-  if (me.google){
-    w.appendChild(el('div', 'hint2', 'Google 已绑定：' + (me.google_email || me.email)));
-  }else{
-    w.appendChild(el('div', 'hint2', '还没绑 Google。想用 Google 身份认证找回密码，先用「用 Google 登录」进一次。'));
-  }
+  try{
+    const setup = await apiGet('/api/setup/status');
+    const modeText = setup.mode === 'merchant' ? '商家版（卖订阅）' : '个人版（自己用）';
+    w.appendChild(el('div', 'hint2', '当前模式：' + modeText + (me.role === 'owner' ? ' · 你是 owner（管理员）' : ' · 你是会员')));
+    if (me.role === 'owner' && setup.mode !== 'merchant'){
+      w.appendChild(el('div', 'desc', '个人版没有订阅后台。要卖套餐，在 .env 里写 DEPLOY_MODE=merchant 再重启；已经有账号后网页不能改模式。'));
+    }
+  }catch (e){ /* 老版本没有 setup 接口 */ }
 
 
   // ---- 订阅 / 商家管理 ----
@@ -111,9 +114,40 @@ async function showAccount(){
     }
 
     if (me.role === 'owner'){
-      w.appendChild(el('div', 'sect', '商家管理：套餐'));
-      const plans = billing.plans || [];
-      plans.forEach(plan => {
+      w.appendChild(el('div', 'sect', '商家后台 · 发兑换码'));
+      w.appendChild(el('div', 'desc', '选套餐、填数量，生成后只显示这一次，先复制再发人。'));
+      const genPlan = document.createElement('select');
+      (billing.plans || []).forEach(plan => {
+        const opt = document.createElement('option');
+        opt.value = plan.id;
+        opt.textContent = plan.name + '（' + plan.days + ' 天 / ' + plan.messages + ' 条 / ¥' + (plan.price_cents / 100) + '）';
+        genPlan.appendChild(opt);
+      });
+      w.appendChild(genPlan);
+      const genCount = inputEl('10', '生成数量，例如 10');
+      const genNote = inputEl('', '备注（卖给谁 / 渠道，可不填）');
+      w.appendChild(genCount);
+      w.appendChild(genNote);
+      const gen = mini('生成兑换码');
+      w.appendChild(gen);
+      const codesOut = el('div', 'out', '');
+      codesOut.style.whiteSpace = 'pre-wrap';
+      codesOut.style.userSelect = 'all';
+      w.appendChild(codesOut);
+      gen.addEventListener('click', async () => {
+        codesOut.textContent = '生成中…';
+        try{
+          const r = await apiPost('/api/billing/admin/codes', {
+            plan_id: genPlan.value,
+            count: parseInt(genCount.value || '1', 10),
+            note: genNote.value.trim()
+          });
+          codesOut.textContent = '只显示这一次，长按全选复制：\n' + (r.codes || []).join('\n');
+        }catch (e){ codesOut.textContent = e.message; }
+      });
+
+      w.appendChild(el('div', 'sect', '商家后台 · 套餐'));
+      (billing.plans || []).forEach(plan => {
         w.appendChild(el('div', 'desc', plan.id + ' · ' + plan.name + ' · ' + plan.days + ' 天 · ' + plan.messages + ' 条 · ¥' + (plan.price_cents / 100) + ' · ' + plan.storage_mb + 'MB'));
       });
       const pid = inputEl('', '套餐 id，例如 start');
@@ -137,31 +171,11 @@ async function showAccount(){
             price_cents: Math.round(parseFloat(pprice.value || '0') * 100),
             storage_mb: parseInt(pstore.value || '1024', 10)
           });
-          planOut.textContent = '已保存，刷新页面看新套餐。';
+          planOut.textContent = '已保存，重新点开这个面板看新套餐。';
         }catch (e){ planOut.textContent = e.message; }
       });
 
-      w.appendChild(el('div', 'sect', '商家管理：兑换码'));
-      const genPlan = inputEl('', '套餐 id，例如 start');
-      const genCount = inputEl('', '生成数量，例如 10');
-      const genNote = inputEl('', '备注（卖给谁 / 渠道）');
-      [genPlan, genCount, genNote].forEach(x => w.appendChild(x));
-      const gen = mini('生成兑换码');
-      w.appendChild(gen);
-      const codesOut = el('div', 'out', '');
-      codesOut.style.whiteSpace = 'pre-wrap';
-      w.appendChild(codesOut);
-      gen.addEventListener('click', async () => {
-        codesOut.textContent = '生成中…';
-        try{
-          const r = await apiPost('/api/billing/admin/codes', {
-            plan_id: genPlan.value.trim(), count: parseInt(genCount.value || '1', 10), note: genNote.value.trim()
-          });
-          codesOut.textContent = '只显示这一次，先复制：\n' + (r.codes || []).join('\n');
-        }catch (e){ codesOut.textContent = e.message; }
-      });
-
-      w.appendChild(el('div', 'sect', '商家管理：会员额度'));
+      w.appendChild(el('div', 'sect', '商家后台 · 会员额度'));
       try{
         const ov = await apiGet('/api/billing/admin/overview');
         (ov.accounts || []).forEach(u => {
@@ -228,6 +242,12 @@ async function showAccount(){
       keyOut.textContent = '只显示这一次，复制走：' + out.key;
     }catch (e){ keyOut.textContent = e.message; }
   });
+
+  // ---- 登录方式 ----
+  w.appendChild(el('div', 'sect', '登录方式'));
+  w.appendChild(el('div', 'desc', me.google
+    ? 'Google 已绑定：' + (me.google_email || me.email)
+    : 'Google 还没绑定。不影响用邮箱密码登录；商家配好 Google Client 后，可以用「用 Google 登录」进一次自动绑定。'));
 
   // ---- 设备 ----
   w.appendChild(el('div', 'sect', '登录中的设备'));
