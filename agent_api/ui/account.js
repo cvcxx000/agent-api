@@ -78,6 +78,101 @@ async function showAccount(){
     w.appendChild(el('div', 'hint2', '还没绑 Google。想用 Google 身份认证找回密码，先用「用 Google 登录」进一次。'));
   }
 
+
+  // ---- 订阅 / 商家管理 ----
+  let billing = null;
+  try{ billing = await apiGet('/api/billing/me'); }catch (e){ billing = null; }
+  if (billing && billing.enabled){
+    if (me.role !== 'owner'){
+    const acct = billing.account || {};
+    const statusText = { active: '有效', expired: '已到期', none: '未订阅' }[acct.status] || acct.status || '未订阅';
+    w.appendChild(el('div', 'sect', '订阅'));
+    const row = el('div', 'kv');
+    row.appendChild(el('b', '', (acct.plan_name || '没有套餐') + ' · ' + statusText));
+    row.appendChild(el('span', '', acct.status === 'active'
+      ? ('到期 ' + acct.expires_at + ' · 剩余 ' + acct.remaining_messages + ' 条 · 空间 ' + acct.storage_mb + 'MB')
+      : '输入兑换码开通，数据不会因为到期被删'));
+    w.appendChild(row);
+
+    const code = inputEl('', '兑换码，例如 AG-XXXX-XXXX');
+    w.appendChild(code);
+    const use = mini('兑换 / 续费');
+    w.appendChild(use);
+    const out = el('div', 'out', '');
+    w.appendChild(out);
+    use.addEventListener('click', async () => {
+      out.textContent = '兑换中…';
+      try{
+        const r = await apiPost('/api/billing/redeem', { code: code.value.trim() });
+        out.textContent = '开通成功：' + r.account.plan_name + '，到期 ' + r.account.expires_at + '，剩余 ' + r.account.remaining_messages + ' 条';
+        code.value = '';
+      }catch (e){ out.textContent = e.message; }
+    });
+    }
+
+    if (me.role === 'owner'){
+      w.appendChild(el('div', 'sect', '商家管理：套餐'));
+      const plans = billing.plans || [];
+      plans.forEach(plan => {
+        w.appendChild(el('div', 'desc', plan.id + ' · ' + plan.name + ' · ' + plan.days + ' 天 · ' + plan.messages + ' 条 · ¥' + (plan.price_cents / 100) + ' · ' + plan.storage_mb + 'MB'));
+      });
+      const pid = inputEl('', '套餐 id，例如 start');
+      const pname = inputEl('', '套餐名，例如 入门月卡');
+      const pdays = inputEl('', '有效天数，例如 30');
+      const pmsgs = inputEl('', '可用消息条数，例如 300');
+      const pprice = inputEl('', '价格（元），例如 9.9');
+      const pstore = inputEl('', '空间 MB，例如 1024');
+      [pid, pname, pdays, pmsgs, pprice, pstore].forEach(x => w.appendChild(x));
+      const savePlan = mini('保存 / 新增套餐');
+      w.appendChild(savePlan);
+      const planOut = el('div', 'out', '');
+      w.appendChild(planOut);
+      savePlan.addEventListener('click', async () => {
+        planOut.textContent = '保存中…';
+        try{
+          await apiPost('/api/billing/admin/plans', {
+            id: pid.value.trim(), name: pname.value.trim(),
+            days: parseInt(pdays.value || '30', 10),
+            messages: parseInt(pmsgs.value || '300', 10),
+            price_cents: Math.round(parseFloat(pprice.value || '0') * 100),
+            storage_mb: parseInt(pstore.value || '1024', 10)
+          });
+          planOut.textContent = '已保存，刷新页面看新套餐。';
+        }catch (e){ planOut.textContent = e.message; }
+      });
+
+      w.appendChild(el('div', 'sect', '商家管理：兑换码'));
+      const genPlan = inputEl('', '套餐 id，例如 start');
+      const genCount = inputEl('', '生成数量，例如 10');
+      const genNote = inputEl('', '备注（卖给谁 / 渠道）');
+      [genPlan, genCount, genNote].forEach(x => w.appendChild(x));
+      const gen = mini('生成兑换码');
+      w.appendChild(gen);
+      const codesOut = el('div', 'out', '');
+      codesOut.style.whiteSpace = 'pre-wrap';
+      w.appendChild(codesOut);
+      gen.addEventListener('click', async () => {
+        codesOut.textContent = '生成中…';
+        try{
+          const r = await apiPost('/api/billing/admin/codes', {
+            plan_id: genPlan.value.trim(), count: parseInt(genCount.value || '1', 10), note: genNote.value.trim()
+          });
+          codesOut.textContent = '只显示这一次，先复制：\n' + (r.codes || []).join('\n');
+        }catch (e){ codesOut.textContent = e.message; }
+      });
+
+      w.appendChild(el('div', 'sect', '商家管理：会员额度'));
+      try{
+        const ov = await apiGet('/api/billing/admin/overview');
+        (ov.accounts || []).forEach(u => {
+          const a = u.account || {};
+          const line = (u.email || u.name || u.id) + ' · ' + (a.status || 'none') + ' · ' + (a.plan_name || '无套餐') + ' · 剩 ' + (a.remaining_messages || 0) + ' 条';
+          w.appendChild(el('div', 'desc', line));
+        });
+      }catch (e){ w.appendChild(el('div', 'desc', '读取会员失败：' + e.message)); }
+    }
+  }
+
   // ---- 改密码 ----
   w.appendChild(el('div', 'sect', '改密码'));
   const oldPwd = inputEl('', '原密码（Google 建的账号可留空）');

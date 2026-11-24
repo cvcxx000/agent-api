@@ -258,6 +258,7 @@ $('goFiles').addEventListener('click', () => { openDrawer(false); pushSheet('fil
 $('goSchedules').addEventListener('click', () => { openDrawer(false); pushSheet('schedules', '定时任务', 'cron 到点自动跑', () => showSchedules()); });
 $('goProviders').addEventListener('click', () => { openDrawer(false); pushSheet('providers', '提供商', '目录 / 拉模型 / 切换', () => showProviders()); });
 $('goSettings').addEventListener('click', () => { openDrawer(false); pushSheet('settings', '设置', '模型 · 搜索 · 图片 · 视频', () => showSettings()); });
+$('goAccount').addEventListener('click', () => { openDrawer(false); pushSheet('account', '账号与安全', '订阅 · 兑换码 · 密钥 · 退出', () => showAccount()); });
 $('btnHeaderSettings').addEventListener('click', () => { openDrawer(false); pushSheet('settings', '设置', '模型 · 搜索 · 图片 · 视频', () => showSettings()); });
 $('goTerminal').addEventListener('click', () => {
   openDrawer(false);

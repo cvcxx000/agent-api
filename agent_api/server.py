@@ -12,6 +12,7 @@ from typing import Any, Callable, Iterable
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .config import settings
+from .deploy import is_merchant
 from .errors import AppError, NotFoundError
 from .security import check_token, reset_root, use_root
 
@@ -123,6 +124,25 @@ GUEST_ALLOW_PREFIXES = (
 )
 
 
+MEMBER_DENY_PREFIXES = (
+    "/api/providers", "/api/config", "/api/backup", "/api/cookies", "/api/plugins",
+    "/api/schedules", "/api/workflows", "/api/execute/python", "/api/auth/google/config",
+    "/api/ui/settings", "/api/ui/prompt", "/api/ui/search", "/api/ui/media", "/api/ui/llm",
+)
+
+MEMBER_UI_ALLOW = ("/api/ui/upload", "/api/ui/preview", "/api/ui/tts/speak")
+
+
+def member_path_ok(path: str) -> bool:
+    clean = path.rstrip("/") or "/"
+    if clean.startswith("/api/ui/"):
+        return any(clean == allow or clean.startswith(allow + "/") for allow in MEMBER_UI_ALLOW)
+    for prefix in MEMBER_DENY_PREFIXES:
+        if clean == prefix or clean.startswith(prefix + "/"):
+            return False
+    return True
+
+
 def guest_path_ok(path: str) -> bool:
     clean = path.rstrip("/") or "/"
     for prefix in GUEST_ALLOW_PREFIXES:
@@ -157,12 +177,19 @@ class Router:
                 if service is not None:
                     ident = service.require(request)
                     role = str((ident or {}).get("role") or "")
+                    isolated = role == "guest" or (role == "user" and is_merchant())
                     if role == "guest":
                         if not guest_path_ok(path):
                             from .auth import ForbiddenError
                             raise ForbiddenError("游客只能聊天、传文件、看自己的会话；改设置 / 密钥 / 提供商请注册正式账号")
+                    elif role == "user" and is_merchant():
+                        if not member_path_ok(path):
+                            from .auth import ForbiddenError
+                            raise ForbiddenError("商家版会员不能改全局设置 / 提供商，也不能跑本机代码；订阅后聊天、传文件、看自己的会话都可以")
+                    if isolated:
                         gid = str((ident or {}).get("user_id") or "")
-                        root = Path(settings.sandbox_root) / "guests" / gid
+                        sub = "guests" if role == "guest" else "users"
+                        root = Path(settings.sandbox_root) / sub / gid
                         root.mkdir(parents=True, exist_ok=True)
                         root_token = use_root(root)
                 else:

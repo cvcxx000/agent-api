@@ -286,6 +286,21 @@ def mount(router) -> None:
                     f"游客空间只有 {state.get('quota_mb')}MB，已用 {state.get('used_mb')}MB，"
                     f"这个文件 {len(raw) / 1024 / 1024:.1f}MB 放不下：先删点自己的文件"
                 )
+        elif str(ident.get("role") or "") == "user":
+            billing = getattr(req.runtime, "billing", None)
+            if billing is not None and billing.enabled():
+                account = billing.account(str(ident.get("user_id") or ""))
+                quota_mb = int(account.get("storage_mb") or 0)
+                if quota_mb:
+                    used = 0
+                    for item in active_root().rglob("*"):
+                        try:
+                            if item.is_file() and not item.is_symlink():
+                                used += item.stat().st_size
+                        except OSError:
+                            continue
+                    if used + len(raw) > quota_mb * 1024 * 1024:
+                        raise AppError(f"订阅空间只有 {quota_mb}MB，已用 {used / 1024 / 1024:.1f}MB，这个文件放不下：删点文件或升级套餐")
         settings = req.runtime.settings
         target_dir = active_root() / "uploads"
         target_dir.mkdir(parents=True, exist_ok=True)

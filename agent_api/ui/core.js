@@ -427,7 +427,16 @@ function sheetWrap(){
     const resp = await fetch('/api/auth/me', { credentials: 'same-origin' });
     if (!resp.ok) return;
     const data = await resp.json();
-    if (!data.me || !data.me.guest) return;
+    if (!data.me || !data.me.guest) {
+      if (data.me && data.me.role === 'user') {
+        try{
+          const b = await fetch('/api/billing/me', { credentials: 'same-origin' });
+          const j = await b.json();
+          if (j && j.enabled) document.body.classList.add('member');
+        }catch (e){ /* 非商家版 */ }
+      }
+      return;
+    }
     document.body.classList.add('guest');
     const bar = document.createElement('div');
     bar.className = 'guestBar';

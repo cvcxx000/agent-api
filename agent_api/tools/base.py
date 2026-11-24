@@ -40,6 +40,7 @@ class ToolSpec:
 GUEST_BLOCKED_PREFIXES = ("spawn_", "wait_", "cancel_", "plugin_", "schedule_", "cookie_")
 GUEST_BLOCKED_NAMES = {"spawn_agent", "wait_agent", "list_agents", "cancel_agent"}
 GUEST_UNLOCK_NAMES = {"run_python", "run_shell"}
+MEMBER_NO_EXEC_NAMES = {"run_python", "run_shell"}
 
 
 def guest_tool_error(name: str, ctx: ToolContext) -> str:
@@ -50,6 +51,14 @@ def guest_tool_error(name: str, ctx: ToolContext) -> str:
         return f"ERROR: 游客不能用工具 {name}：子 Agent / 插件 / 定时任务 / Cookie 都属于正式账号"
     if name in GUEST_UNLOCK_NAMES and not ctx.extra.get("guest_unlocked"):
         return "ERROR: 游客用 Python / 终端要先解锁：开游客时给过一串解锁码，在账号面板或终端 /unlock 输入后才行（仍然只能动自己的目录）"
+    return ""
+
+
+def member_tool_error(name: str, ctx: ToolContext) -> str:
+    if not ctx.extra.get("merchant_member"):
+        return ""
+    if name in MEMBER_NO_EXEC_NAMES:
+        return "ERROR: 商家版会员不能在本机跑 Python / 终端（这是共享主机）。文件读写、看图、搜网页、生成媒体都可以"
     return ""
 
 
@@ -87,7 +96,7 @@ class ToolRegistry:
         for spec in self._specs.values():
             if spec.requires_spawn and not ctx.allow_spawn:
                 continue
-            if guest_tool_error(spec.name, ctx):
+            if guest_tool_error(spec.name, ctx) or member_tool_error(spec.name, ctx):
                 continue
             out.append(spec)
         return out
@@ -101,8 +110,9 @@ class ToolRegistry:
             for spec in self.available(ctx)
         ]
 
-    def describe(self) -> list[dict[str, Any]]:
-        return [{"name": s.name, "description": s.description, "parameters": s.parameters} for s in self._specs.values()]
+    def describe(self, ctx: ToolContext | None = None) -> list[dict[str, Any]]:
+        specs = self.available(ctx) if ctx is not None else list(self._specs.values())
+        return [{"name": s.name, "description": s.description, "parameters": s.parameters} for s in specs]
 
     def execute(self, name: str, arguments: dict[str, Any], ctx: ToolContext) -> str:
         spec = self._specs.get(name)
@@ -110,7 +120,7 @@ class ToolRegistry:
             return f"ERROR: 未知工具 {name}，可用工具：{', '.join(self._specs)}"
         if spec.requires_spawn and not ctx.allow_spawn:
             return f"ERROR: 当前 Agent 层级（depth={ctx.depth}）不允许再派发子 Agent。"
-        blocked = guest_tool_error(name, ctx)
+        blocked = guest_tool_error(name, ctx) or member_tool_error(name, ctx)
         if blocked:
             return blocked
         try:

@@ -468,6 +468,7 @@ COMMANDS = [
     ("/guest", "开一个临时游客（独立目录 / 100MB / 每分钟 1 条）"),
     ("/unlock", "游客解锁 Python / 终端：/unlock 解锁码"),
     ("/logout", "退出登录"),
+    ("/subscribe", "商家版订阅：/subscribe 兑换码"),
     ("/whoami", "看当前账号 / 身份来源"),
     ("/skills", "列出所有技能"),
     ("/skill", "载入技能：/skill 名字"),
@@ -621,6 +622,31 @@ def cmd_whoami(api):
     keys = me.get("keys") or []
     if keys:
         print(c(DIM, f"  这个账号有 {len(keys)} 个 API 密钥"))
+    try:
+        bill = api.get("/api/billing/me")
+        if bill.get("enabled") and me.get("role") != "owner":
+            acct = bill.get("account") or {}
+            status = {"active": "有效", "expired": "已到期", "none": "未订阅"}.get(acct.get("status"), acct.get("status") or "未订阅")
+            if acct.get("status") == "active":
+                print(c(BOLD, "订阅：") + f"{acct.get('plan_name')} · 到期 {acct.get('expires_at')} · 剩 {acct.get('remaining_messages')} 条")
+            else:
+                print(c(BOLD, "订阅：") + status + c(DIM, "（/subscribe 兑换码）"))
+    except (RuntimeError, SystemExit):
+        pass
+
+
+def cmd_subscribe(api: Api, code: str) -> None:
+    code = (code or "").strip()
+    if not code:
+        print(c(RED, "用法：/subscribe AG-XXXX-XXXX"))
+        return
+    try:
+        res = api.post("/api/billing/redeem", {"code": code})
+    except (RuntimeError, SystemExit) as exc:
+        print(c(RED, str(exc)))
+        return
+    account = res.get("account") or {}
+    print(c(GREEN, "已开通：") + f"{account.get('plan_name')} · 到期 {account.get('expires_at')} · 剩 {account.get('remaining_messages')} 条")
 
 
 def cmd_skills(api):
@@ -906,6 +932,9 @@ def main() -> None:
             continue
         if line == "/logout":
             cmd_logout(api)
+            continue
+        if line == "/subscribe" or line.startswith("/subscribe "):
+            cmd_subscribe(api, line[len("/subscribe"):].strip())
             continue
         if line == "/whoami":
             cmd_whoami(api)

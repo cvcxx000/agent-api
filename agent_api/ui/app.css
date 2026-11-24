@@ -635,10 +635,11 @@ footer{
   word-break:break-all;background:rgba(180,85,45,.08);border:1px dashed rgba(180,85,45,.35);
   border-radius:10px;padding:10px 12px;margin:8px 0;user-select:all}
 
-body.guest #goSettings, body.guest #inpToken, body.guest #inpSystem, body.guest #inpTurns, body.guest #btnSave{display:none!important}
+body.guest #goSettings, body.guest #goProviders, body.guest #goAccount, body.guest #inpToken, body.guest #inpSystem, body.guest #inpTurns, body.guest #btnSave{display:none!important}
 .guestBar{position:sticky;top:0;z-index:40;padding:6px 12px;font-size:12px;text-align:center;background:#fff3d6;color:#8a5a00;border-bottom:1px solid #f0d79a}
 [data-theme="dark"] .guestBar{background:#3a2c10;color:#ffcf70;border-bottom-color:#5a4418}
 body.guest #modelChip{pointer-events:none;opacity:.6}
+body.member #goSettings, body.member #goProviders{display:none!important}
 
 .guestBar{display:flex;align-items:center;justify-content:center;gap:10px}
 .guestQuit{border:1px solid currentColor;background:transparent;color:inherit;border-radius:999px;padding:2px 10px;font-size:12px}

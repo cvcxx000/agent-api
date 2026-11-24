@@ -70,8 +70,9 @@ def write_file(ctx: ToolContext, args: dict[str, Any]) -> str:
     if not isinstance(content, str):
         content = str(content)
     append = bool(args.get("append"))
-    if ctx.extra.get("guest"):
-        limit = int(os.getenv("GUEST_QUOTA_MB") or 100) * 1024 * 1024
+    quota_mb = int(ctx.extra.get("quota_mb") or (os.getenv("GUEST_QUOTA_MB") if ctx.extra.get("guest") else 0) or 0)
+    if quota_mb:
+        limit = quota_mb * 1024 * 1024
         used = 0
         for item in active_root().rglob("*"):
             try:
@@ -80,7 +81,7 @@ def write_file(ctx: ToolContext, args: dict[str, Any]) -> str:
             except OSError:
                 continue
         if used + len(content.encode("utf-8")) > limit:
-            raise ToolError(f"游客空间只有 {limit // 1024 // 1024}MB，已用 {used / 1024 / 1024:.1f}MB，这次写不下了：先删点自己的文件")
+            raise ToolError(f"空间只有 {limit // 1024 // 1024}MB，已用 {used / 1024 / 1024:.1f}MB，这次写不下了：先删点自己的文件，或升级套餐")
     if path.parent and not path.parent.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
     if append:

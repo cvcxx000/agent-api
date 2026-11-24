@@ -115,6 +115,17 @@
 <button id="btn-guest-enter">我记下了，进入</button>
       <p class="alt"><span class="link" data-go="login">返回登录</span></p>
     </div>
+
+    <!-- 第一次：选部署模式 -->
+    <div class="pane" id="pane-setup">
+      <h1>这台设备怎么用？</h1>
+      <p class="sub">先选一次，之后想改就在 .env 里设 DEPLOY_MODE。没有正式账号之前才能改。</p>
+      <button id="btn-mode-personal">个人版：自己用</button>
+      <p class="hint">一个主人，用自己的模型 Key；注册默认关闭，游客按 GUEST_ENABLED 决定。</p>
+      <button id="btn-mode-merchant">商家版：卖订阅</button>
+      <p class="hint">商家配自己的模型 Key，用户注册后买套餐；每个会员有独立目录和额度。</p>
+      <div id="msg-setup" class="msg"></div>
+    </div>
     <!-- 注册 -->
     <div class="pane" id="pane-register">
       <h1 id="reg-title">创建账号</h1>

@@ -33,6 +33,7 @@ class Runtime:
         self.schedules: Any = None
         self.cookie_store: Any = None
         self.auth: Any = None
+        self.billing: Any = None
         self.registry: ToolRegistry | None = None
 
 
@@ -73,6 +74,9 @@ def create_runtime(settings: Settings | None = None) -> Runtime:
     from .auth import AuthService
 
     runtime.auth = AuthService(st)
+    from .billing import BillingService
+
+    runtime.billing = BillingService(st.data_dir)
     runtime.schedules = ScheduleStore(runtime)
     runtime.schedules.start()
     logger.info(

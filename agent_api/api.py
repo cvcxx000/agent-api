@@ -10,6 +10,7 @@ import queue
 import threading
 from typing import Any
 
+from .deploy import is_merchant
 from .security import active_root
 from . import documents
 from .agent import Agent
@@ -35,7 +36,32 @@ def _is_guest(req: Request) -> bool:
 
 
 def _owner(req: Request) -> str:
-    return str(_ident(req).get("user_id") or "") if _is_guest(req) else ""
+    ident = _ident(req)
+    role = str(ident.get("role") or "")
+    if role == "guest" or (role == "user" and is_merchant()):
+        return str(ident.get("user_id") or "")
+    return ""
+
+
+def _billing_account(runtime: Any, req: Request) -> dict[str, Any]:
+    if not is_merchant() or getattr(runtime, "billing", None) is None:
+        return {}
+    ident = _ident(req)
+    if str(ident.get("role") or "") != "user":
+        return {}
+    return runtime.billing.require(str(ident.get("user_id") or ""))
+
+
+def _billing_consume(runtime: Any, req: Request, usage: dict[str, Any] | None) -> None:
+    if not is_merchant() or getattr(runtime, "billing", None) is None:
+        return
+    ident = _ident(req)
+    if str(ident.get("role") or "") != "user":
+        return
+    try:
+        runtime.billing.consume(str(ident.get("user_id") or ""), int((usage or {}).get("total") or 0), 1)
+    except Exception:  # noqa: BLE001 - 记账失败不该把已经成功的回答吞掉
+        logger.warning("订阅记账失败", exc_info=True)
 
 
 def _own(session: Session, req: Request) -> Session:
@@ -74,16 +100,27 @@ def _ctx(runtime: Any, session: Session | None = None, req: Request | None = Non
     ident = dict(getattr(req, "identity", None) or {}) if req is not None else {}
     guest = str(ident.get("role") or "") == "guest"
     unlocked = False
+    quota_mb = 0
     if guest:
         try:
-            unlocked = bool(runtime.auth.guest_state(str(ident.get("user_id"))).get("unlocked"))
+            state = runtime.auth.guest_state(str(ident.get("user_id")))
+            unlocked = bool(state.get("unlocked"))
+            quota_mb = int(state.get("quota_mb") or 0)
         except Exception:  # noqa: BLE001
             unlocked = False
+    elif is_merchant() and str(ident.get("role") or "") == "user":
+        try:
+            quota_mb = int(runtime.billing.account(str(ident.get("user_id"))).get("storage_mb") or 0)
+        except Exception:  # noqa: BLE001
+            quota_mb = 0
     return ToolContext(
         session=session or Session(id="api-direct", title="API 直调", persist=False),
         agent_id="api",
         allow_spawn=False,
-        extra={"guest": guest, "guest_unlocked": unlocked},
+        extra={
+            "guest": guest, "guest_unlocked": unlocked, "quota_mb": quota_mb,
+            "merchant_member": is_merchant() and str(ident.get("role") or "") == "user",
+        },
     )
 
 
@@ -129,7 +166,10 @@ def build_router(runtime: Any) -> Router:
         )
 
     def tools(req: Request, params: dict[str, str]) -> Response:
-        return json_response({"tools": runtime.registry.describe()})
+        role = str(_ident(req).get("role") or "")
+        restricted = role == "guest" or (role == "user" and is_merchant())
+        ctx = _ctx(runtime, req=req) if restricted else None
+        return json_response({"tools": runtime.registry.describe(ctx)})
 
     router.add("GET", "/health", health, auth=False)
     router.add("GET", "/api/config", config)
@@ -243,6 +283,7 @@ def build_router(runtime: Any) -> Router:
         if not isinstance(message, str) or not message.strip():
             raise AppError("message 不能为空")
         guest = _guest_enter(runtime, req, chat=True)
+        billing = _billing_account(runtime, req)
         session = _prepare_session(body, owner=_owner(req))
         atts = _attachments(body)
         atts, doc_notes = _expand_documents(atts)
@@ -252,10 +293,16 @@ def build_router(runtime: Any) -> Router:
             agent_id="main",
             depth=0,
             allow_spawn=not _is_guest(req),
-            extra={"guest": _is_guest(req), "guest_unlocked": bool(guest.get("unlocked"))},
+            extra={
+                "guest": _is_guest(req),
+                "guest_unlocked": bool(guest.get("unlocked")),
+                "quota_mb": int(guest.get("quota_mb") or billing.get("storage_mb") or 0),
+                "merchant_member": is_merchant() and str(_ident(req).get("role") or "") == "user",
+            },
         )
         agent = Agent(runtime, session, ctx, max_turns=int(max_turns) if max_turns else None)
         result = agent.run(_with_attachments(message, atts, doc_notes), attachments=atts)
+        _billing_consume(runtime, req, session.usage)
         return json_response(
             {
                 "session_id": session.id,
@@ -275,6 +322,7 @@ def build_router(runtime: Any) -> Router:
         if not isinstance(message, str) or not message.strip():
             raise AppError("message 不能为空")
         guest = _guest_enter(runtime, req, chat=True)
+        billing = _billing_account(runtime, req)
         session = _prepare_session(body, owner=_owner(req))
         atts = _attachments(body)
         atts, doc_notes = _expand_documents(atts)
@@ -284,7 +332,12 @@ def build_router(runtime: Any) -> Router:
             agent_id="main",
             depth=0,
             allow_spawn=not _is_guest(req),
-            extra={"guest": _is_guest(req), "guest_unlocked": bool(guest.get("unlocked"))},
+            extra={
+                "guest": _is_guest(req),
+                "guest_unlocked": bool(guest.get("unlocked")),
+                "quota_mb": int(guest.get("quota_mb") or billing.get("storage_mb") or 0),
+                "merchant_member": is_merchant() and str(_ident(req).get("role") or "") == "user",
+            },
         )
         agent = Agent(runtime, session, ctx, max_turns=int(max_turns) if max_turns else None)
 
@@ -295,6 +348,7 @@ def build_router(runtime: Any) -> Router:
         def worker() -> None:
             try:
                 result = agent.run(_with_attachments(message, atts, doc_notes), emit=events.put, attachments=atts)
+                _billing_consume(runtime, req, session.usage)
                 events.put(
                     {
                         "type": "final",
@@ -632,7 +686,9 @@ def build_router(runtime: Any) -> Router:
     router.add("GET", "/api/sessions/{session_id}/export", export_session)
 
     from .auth_api import mount_auth
+    from .billing_api import mount_billing
 
     mount_auth(router, runtime)
+    mount_billing(router, runtime)
 
     return router

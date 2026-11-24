@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import settings
+from .deploy import env_locked, mode as deploy_mode, status as deploy_status
 from .errors import AppError
 from .net import NetError, UA, json_request
 from .security import AuthError
@@ -302,6 +303,8 @@ class AuthService:
             return dict(self._load().get("config") or {})
 
     def register_open(self) -> bool:
+        if deploy_mode() == "merchant":
+            return True
         cfg = self.config()
         if not self.has_users():
             return True
@@ -319,6 +322,10 @@ class AuthService:
             "guest_ttl_hours": guest_ttl_hours(),
             "guest_quota_mb": guest_quota_mb(),
             "guest_rate_seconds": guest_rate_seconds(),
+            "mode": deploy_mode(),
+            "mode_unset": deploy_mode() == "unset",
+            "mode_env_locked": env_locked(),
+            "deploy": deploy_status(),
             "setup_needed": not users,
             "register_open": self.register_open(),
             "allow_register": bool(cfg.get("allow_register")),
@@ -454,7 +461,7 @@ class AuthService:
             if any(u.get("email") == email for u in data["users"]):
                 raise AppError("这个邮箱已经注册过了，直接登录")
             real_users = [u for u in data["users"] if not u.get("guest")]
-            if real_users and not bool((data.get("config") or {}).get("allow_register")):
+            if real_users and not self.register_open():
                 raise ForbiddenError("注册已关闭：这台设备只允许一个账号。登录后在「账号与安全」里可以打开注册")
             recovery = _new_recovery_code()
             user = {

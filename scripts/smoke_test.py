@@ -800,6 +800,74 @@ check("游客到期目录也清掉", not (SMOKE / "workspace" / "guests" / gid).
 owner = next((u for u in runtime.auth.users() if not u.get("guest")), {})
 check("正式账号仍是 owner（游客没搅乱角色）", owner.get("role") == "owner" and len(runtime.auth.accounts()) == 1, str(owner)[:200])
 
+# ---------------- 商家版订阅（服务层） ----------------
+import os
+import tempfile
+from types import SimpleNamespace
+
+from agent_api.auth import AuthService
+from agent_api.billing import BillingService, SubscriptionQuota, SubscriptionRequired
+from agent_api.server import member_path_ok
+
+_old_mode = os.environ.get("DEPLOY_MODE")
+os.environ["DEPLOY_MODE"] = "merchant"
+_mdir = Path(tempfile.mkdtemp(prefix="smoke-merchant-"))
+try:
+    billing = BillingService(_mdir)
+    check("商家版：订阅服务是开的", billing.enabled() is True)
+    plans = billing.plans()
+    check("商家版：默认套餐有 start / pro", {p["id"] for p in plans} >= {"start", "pro"}, str(plans)[:200])
+    codes = billing.generate_codes("start", 2, "smoke")
+    check("商家版：能生成兑换码", len(codes) == 2 and all(c.startswith("AG-") for c in codes), str(codes))
+    check("商家版：没订阅时账户是 none", billing.account("usr_smoke").get("status") == "none", str(billing.account("usr_smoke")))
+    try:
+        billing.require("usr_smoke")
+        check("商家版：没订阅聊天被 402", False, "require 没报错")
+    except SubscriptionRequired as exc:
+        check("商家版：没订阅聊天被 402", exc.status_code == 402, str(exc))
+    stored = billing.list_codes()[0].get("prefix") or ""
+    check("商家版：落盘只留掩码，不留完整码", stored != codes[0] and "…" in stored, stored)
+    acct = billing.redeem("usr_smoke", codes[0])
+    check("商家版：兑换码开通套餐", acct.get("status") == "active" and acct.get("remaining_messages") == 300, str(acct)[:240])
+    try:
+        billing.redeem("usr_smoke", codes[0])
+        check("商家版：兑换码不能重复用", False, "重复兑换没报错")
+    except Exception as exc:
+        check("商家版：兑换码不能重复用", "用过" in str(exc), str(exc))
+    acct = billing.consume("usr_smoke", 123, 1)
+    check("商家版：聊天扣条数与 token", acct.get("remaining_messages") == 299 and acct.get("used_messages") == 1 and acct.get("tokens_used") == 123, str(acct)[:240])
+    data = billing._load()
+    data["accounts"]["usr_smoke"]["remaining_messages"] = 0
+    billing._save(data)
+    try:
+        billing.require("usr_smoke")
+        check("商家版：条数用完 429", False, "require 没报错")
+    except SubscriptionQuota as exc:
+        check("商家版：条数用完 429", exc.status_code == 429, str(exc))
+    data = billing._load()
+    data["accounts"]["usr_smoke"]["expires"] = 1
+    billing._save(data)
+    try:
+        billing.require("usr_smoke")
+        check("商家版：到期要续费", False, "require 没报错")
+    except SubscriptionRequired:
+        check("商家版：到期要续费", True)
+
+    dummy = SimpleNamespace(data_dir=_mdir)
+    a = AuthService(dummy)
+    check("商家版：用户能自己注册（注册开关强制开）", a.register_open() is True)
+    check("商家版：会员端禁全局配置、放行聊天与上传",
+          (not member_path_ok("/api/providers")) and (not member_path_ok("/api/ui/settings"))
+          and member_path_ok("/api/ui/upload") and member_path_ok("/api/chat") and member_path_ok("/api/files"),
+          "member_path_ok 判定不对")
+finally:
+    if _old_mode is None:
+        os.environ.pop("DEPLOY_MODE", None)
+    else:
+        os.environ["DEPLOY_MODE"] = _old_mode
+    import shutil
+    shutil.rmtree(_mdir, ignore_errors=True)
+
 for asset in ("/ui", "/ui/app.css", "/ui/core.js", "/ui/sessions.js", "/ui/canvas.js", "/ui/chat.js",
                "/ui/providers.js", "/ui/settings.js", "/ui/tts.js", "/ui/schedules.js",
                "/ui/account.js", "/ui/login.js", "/login", "/ui/login.html"):

@@ -181,6 +181,33 @@ python3 scripts/tui.py --token ak_xxx
 
 相关配置：`GUEST_ENABLED=1`（默认开；`0` 关掉）、`GUEST_TTL_HOURS=24`、`GUEST_QUOTA_MB=100`、`GUEST_RATE_SECONDS=60`。终端里 `python3 scripts/tui.py` 后直接 `/guest` 开一个，`/unlock 码` 解锁，`/whoami` 看剩余身份。
 
+### 商家版（卖订阅）
+
+第一次打开会先问一句「这台设备怎么用？」：
+
+- **个人版**：一台设备一个主人，用自己的模型 Key；注册默认关，游客按 `GUEST_ENABLED` 决定。
+- **商家版**：商家配自己的模型 Key，用户自己注册、自己买套餐；每个会员独立目录和额度。
+- **没选**：按个人版规则跑（单主人、注册关），直到你选。
+
+选完会写进 `data/deploy.json`；也可以用环境变量 `DEPLOY_MODE=merchant` 直接锁死，锁死后网页不能再改。
+
+商家版的完整流程：
+
+1. 第一个注册的人是 `owner`（商家）。他在「设置 → 模型」里填一次模型 Key，所有会员共用这一个上游。
+2. 「账号与安全 → 商家管理」里改套餐：默认 `start`（30 天 / 300 条 / ¥9.90 / 1GB）和 `pro`（90 天 / 1500 条 / ¥26.90 / 3GB），价格、天数、条数、空间都能改。
+3. 同一个面板里生成兑换码（`AG-XXXX-XXXX`，一次一批）。**码只显示这一次**，服务端只存哈希，丢了只能重新生成。
+4. 把码卖给用户。用户自己注册，进「账号与安全 → 订阅」输入码，立刻开通；再输一张就在原到期时间上往后加、条数额度累加。
+5. 用户聊天时按条数扣（`/api/chat` 与 `/api/chat/stream` 都算一条），`tokens_used` 只记账不影响额度；额度或有效期用完返回 `402 subscription_required` / `429 subscription_quota`。
+
+会员的边界：
+
+- 文件独立：`workspace/users/<uid>`，跟游客一样是请求级沙箱根，`../` 出不去；上传和 `write_file` 按套餐 `storage_mb` 卡上限。
+- 不能改全局：提供商、设置、搜索 / 图片 / 视频配置、备份、Cookie、插件、定时任务、工作流全部 403；`/api/tools` 里也看不到这些工具。
+- 不能跑本机代码：`run_python` / `run_shell` 对会员直接隐藏 + 拒绝（共享主机，多租户不该给 shell）。文件读写、看图、搜网页、生成图片 / 语音 / 视频照常。
+- 自己的账号功能照常：改密码、身份验证器、API 密钥、退出登录。
+
+**收钱这一步**：兑换码不需要任何支付资质，先卖卡最省事。想「付完自动发码」，支付宝当面付 / 手机网站支付要**商户号**（个体户或企业，个人收款码不能自动核单），拿到后在异步通知里调一次发码 / `billing.redeem()` 就行，业务逻辑不用改。
+
 ### 安全上做了什么
 
 - 密码 scrypt（n=16384, r=8, p=1）+ 随机 salt，比较用常量时间
@@ -193,7 +220,7 @@ python3 scripts/tui.py --token ak_xxx
 - `data/auth.json` 权限 600，里面只有哈希，没有明文密码和明文 API 密钥
 - 唯一的例外是身份验证器的 TOTP 密钥（要算 6 位码必须留原文），也只在这台设备的 `auth.json` 里，不上传、不联网
 
-**边界说明**：这是「一台设备一个主人」的工具，多个账号共用同一个 workspace 和同一批会话文件（没做多租户隔离）。真要隔离，换 `DATA_DIR` / `SANDBOX_ROOT` 再起一个实例。
+**边界说明**：个人版是「一台设备一个主人」，多个账号共用同一个 workspace；商家版的会员有独立目录 `users/<uid>`，但仍然是同一个进程、同一套上游 Key，适合小规模自用 / 熟客订阅，不适合当公网多租户 SaaS 直接开放。真要卖给陌生人，至少加 HTTPS 反向代理、限制注册、给每个会员单独限速，并接受「会员能看到商家配的模型名」这一点。
 
 ## 终端界面（`scripts/tui.py`）
 
@@ -256,10 +283,11 @@ python3 scripts/smoke_test.py    # 端到端自检
 | `ENABLE_SHELL` | **`true`** | 允许 `run_shell`（同权，都在沙箱内）。只想给 Python 就改 false |
 | `PYTHON_TIMEOUT` / `SHELL_TIMEOUT` | `60` / `60` | 单次执行超时（秒，上限 600） |
 | `DANGEROUS_CONFIRM` | `true` | 高危命令闸门开关。`false` = 关掉拦截，不建议 |
-| `SANDBOX_ROOT` | `./workspace` | 文件与执行的沙箱根（游客会自动换成 `guests/<gid>`） |
-| `DATA_DIR` | `./data` | 会话、Cookie、插件状态、临时脚本落盘位置 |
+| `SANDBOX_ROOT` | `./workspace` | 文件与执行的沙箱根（游客换 `guests/<gid>`，商家会员换 `users/<uid>`） |
+| `DATA_DIR` | `./data` | 会话、Cookie、插件状态、临时脚本落盘位置；`deploy.json`、`billing.json` 也在这里 |
 | `SKILLS_DIRS` | `./skills,./workspace/.skills` | Skill 搜索目录（逗号分隔） |
 | `WORKFLOWS_DIR` | `./workflows` | 工作流目录 |
+| `DEPLOY_MODE` | 空 | `personal` / `merchant`。空 = 第一次打开让你选；设了就锁死，网页不能改 |
 | `GUEST_ENABLED` | `1` | 游客试用开关。`0` = 登录页不出现游客入口 |
 | `GUEST_TTL_HOURS` | `24` | 游客活多久（小时），到期自动删账号 / 会话 / 目录 |
 | `GUEST_QUOTA_MB` | `100` | 每个游客的独立空间上限（MB） |
@@ -718,7 +746,7 @@ agent-api/
 python3 scripts/smoke_test.py
 ```
 
-临时沙箱里跑一遍：账号体系（注册 / 登录 / 密钥 / 恢复码重置 / 身份验证器 / 锁定）、鉴权、文件读写、路径逃逸、Python 执行与超时、Cookie、Skill 扫描、Mock 对话、运行时改提示词、载入 Skill、3 子 Agent 并发 + 第 4 个拒绝、工作流、SSE 与思考流、token 用量与缓存命中、PDF/Word 抽字与页面渲染、提供商目录/拉模型/切换/清理、搜索与图片视频配置、上传、Markdown 预览越界、游客（创建 / 隔离目录 / 100MB 配额 / 一分钟一条 / 改设置 403 / 解锁码 / 到期清空）、全部前端静态资源。
+临时沙箱里跑一遍：账号体系（注册 / 登录 / 密钥 / 恢复码重置 / 身份验证器 / 锁定）、鉴权、文件读写、路径逃逸、Python 执行与超时、Cookie、Skill 扫描、Mock 对话、运行时改提示词、载入 Skill、3 子 Agent 并发 + 第 4 个拒绝、工作流、SSE 与思考流、token 用量与缓存命中、PDF/Word 抽字与页面渲染、提供商目录/拉模型/切换/清理、搜索与图片视频配置、上传、Markdown 预览越界、游客（创建 / 隔离目录 / 100MB 配额 / 一分钟一条 / 改设置 403 / 解锁码 / 到期清空）、商家版（套餐 / 兑换码 / 402 / 429 / 扣额度 / 会员权限）、全部前端静态资源。
 
 它自己用随机端口，**正在 8000 跑着服务也能直接跑**（以前会把 `port=0` 当成 8000，直接撞出 `Errno 98 Address already in use`）。
 

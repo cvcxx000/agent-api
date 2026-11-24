@@ -4,7 +4,7 @@
   var state = { status: null, forgotEmail: "", ticket: "", totpTicket: "", totpEmail: "" };
 
   function show(pane) {
-    ['login', 'register', 'recovery', 'forgot', 'reset', 'ticket', 'key', 'totp', 'totp-reset', 'guest'].forEach(function (name) {
+    ['login', 'register', 'recovery', 'forgot', 'reset', 'ticket', 'key', 'totp', 'totp-reset', 'guest', 'setup'].forEach(function (name) {
       var node = $('pane-' + name);
       if (node) node.classList.toggle('on', name === pane);
     });
@@ -64,9 +64,13 @@
     if (st.google_on) $('btn-google-login').style.display = 'flex';
     if (st.guest_enabled && st.users) $('btn-guest').style.display = 'block';
     if (st.register_open && !st.setup_needed) $('login-register-hint').style.display = 'block';
-    if (st.setup_needed) {
-      $('reg-title').textContent = '创建第一个账号';
-      $('reg-sub').textContent = '这台设备还没有账号。第一个账号是主人（owner），建完就要求登录。';
+    if (st.setup_needed && st.mode_unset) {
+      show('setup');
+    } else if (st.setup_needed) {
+      $('reg-title').textContent = st.mode === 'merchant' ? '创建商家账号' : '创建第一个账号';
+      $('reg-sub').textContent = st.mode === 'merchant'
+        ? '第一个账号是商家 owner：配模型 Key、定套餐、发兑换码。之后用户可以自己注册买套餐。'
+        : '这台设备还没有账号。第一个账号是主人（owner），建完就要求登录。';
       show('register');
     } else if (state.ticket) {
       $('ticket-email').value = params.get('email') || '';
@@ -126,6 +130,17 @@
     } finally { this.disabled = false; }
   });
   $('login-password').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('btn-login').click(); });
+
+  // ---- 第一次选模式 ----
+  async function chooseMode(mode) {
+    quiet('msg-setup');
+    try {
+      await post('/api/setup/mode', { mode: mode });
+      location.href = '/login';
+    } catch (e) { msg('msg-setup', e.message, false); }
+  }
+  $('btn-mode-personal').addEventListener('click', function () { chooseMode('personal'); });
+  $('btn-mode-merchant').addEventListener('click', function () { chooseMode('merchant'); });
 
   // ---- 游客试用 ----
   $('btn-guest').addEventListener('click', async function () {
