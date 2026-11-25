@@ -64,15 +64,11 @@
     if (st.google_on) $('btn-google-login').style.display = 'flex';
     if (st.guest_enabled && st.users) $('btn-guest').style.display = 'block';
     if (st.register_open && !st.setup_needed) $('login-register-hint').style.display = 'block';
-    if (st.setup_needed && st.mode_unset) {
-      show('setup');
-    } else if (st.setup_needed) {
-      $('reg-title').textContent = st.mode === 'merchant' ? '创建商家账号' : '创建第一个账号';
-      $('reg-sub').textContent = st.mode === 'merchant'
-        ? '第一个账号是商家 owner：配模型 Key、定套餐、发兑换码。之后用户可以自己注册买套餐。'
-        : '这台设备还没有账号。第一个账号是主人（owner），建完就要求登录。';
-      show('register');
-    } else if (state.ticket) {
+    if (st.setup_needed) {
+      location.href = '/setup';
+      return;
+    }
+    if (state.ticket) {
       $('ticket-email').value = params.get('email') || '';
       show('ticket');
     } else {
@@ -215,9 +211,11 @@
     var body = {
       email: $('reg-email').value.trim(),
       password: $('reg-password').value,
-      name: $('reg-name').value.trim()
+      name: $('reg-name').value.trim(),
+      agree: $('reg-agree').checked
     };
     if (!body.email || !body.password) return msg('msg-register', '邮箱和密码都要填', false);
+    if (!body.agree) return msg('msg-register', '先勾选同意《用户协议》和《商家协议》', false);
     this.disabled = true;
     try {
       var out = await post('/api/auth/register', body);

@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>初始化 · Agent</title>
+<style>
+:root{color-scheme:light;--bg:#f6f4ef;--card:#fff;--ink:#2b2a26;--dim:#8a8378;--line:#e6e1d8;--accent:#9a5b2b;--warn:#b4452f}
+*{box-sizing:border-box}
+body{margin:0;padding:22px 16px 40px;background:var(--bg);color:var(--ink);font:16px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}
+main{max-width:520px;margin:0 auto}
+h1{font-size:24px;margin:0 0 6px}p.sub{color:var(--dim);margin:0 0 18px;font-size:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:14px}
+label{display:block;font-size:13px;color:var(--dim);margin:10px 0 6px}
+input,select{width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--ink);font-size:16px}
+.check{display:flex;gap:10px;align-items:flex-start;font-size:14px;color:var(--ink);margin:10px 0}
+.check input{width:auto;margin-top:3px}
+a{color:var(--accent)}
+button{width:100%;padding:13px;border:0;border-radius:12px;background:var(--accent);color:#fff;font-size:16px;margin-top:16px}
+button:disabled{opacity:.55}
+.out{margin-top:12px;font-size:14px;white-space:pre-wrap;user-select:all}
+.recovery{font:600 18px/1.4 ui-monospace,monospace;letter-spacing:1px;background:#fbf7ee;border:1px dashed #d9c9ae;border-radius:10px;padding:12px;margin:10px 0;word-break:break-all}
+.hide{display:none}
+</style>
+</head>
+<body>
+<main>
+  <h1>初始化这台设备</h1>
+  <p class="sub">第一次用，先把模式、管理员账号和权限定下来。以后要重来，在「账号与安全 → 初始化」里重置。</p>
+
+  <div class="card hide" id="done-card">
+    <b>已经初始化过了</b>
+    <p class="sub">要重新初始化，请用管理员账号登录后进「账号与安全 → 初始化」。</p>
+    <button onclick="location.href='/login'">去登录</button>
+  </div>
+
+  <form id="setup-form">
+    <div class="card">
+      <label for="mode">使用模式</label>
+      <select id="mode">
+        <option value="personal">个人版：自己用，注册默认关闭</option>
+        <option value="merchant">商家版：卖订阅，用户可自己注册</option>
+      </select>
+      <p class="sub" id="mode-note" style="margin-top:8px"></p>
+    </div>
+
+    <div class="card">
+      <label for="email">管理员邮箱</label>
+      <input id="email" type="email" autocomplete="username" placeholder="you@example.com">
+      <label for="name">管理员名字（可选）</label>
+      <input id="name" type="text" placeholder="怎么称呼你">
+      <label for="password">管理员密码</label>
+      <input id="password" type="password" autocomplete="new-password" placeholder="至少 8 位，别用生日">
+    </div>
+
+    <div class="card">
+      <label>权限</label>
+      <div class="check"><input id="guest" type="checkbox" checked><span>允许游客试用（独立目录 / 限时限量）</span></div>
+      <div class="check"><input id="register" type="checkbox"><span>允许其他人注册（个人版默认关；商家版始终开）</span></div>
+      <div class="check"><input id="codes" type="checkbox"><span>开启兑换码（只影响商家版；开启前请确认码不会泄露）</span></div>
+    </div>
+
+    <div class="card">
+      <div class="check"><input id="agree" type="checkbox"><span>我已阅读并同意 <a href="/terms/user" target="_blank">《用户协议》</a> 和 <a href="/terms/merchant" target="_blank">《商家协议》</a></span></div>
+      <button id="submit" type="submit">初始化并进入</button>
+      <div class="out" id="msg"></div>
+    </div>
+  </form>
+
+  <div class="card hide" id="recovery-card">
+    <b>记下恢复码</b>
+    <p class="sub">忘记密码时的退路，只显示这一次。</p>
+    <div class="recovery" id="recovery-code">—</div>
+    <button onclick="location.href='/ui'">我记下了，进入</button>
+  </div>
+</main>
+<script src="/ui/setup.js"></script>
+</body>
+</html>

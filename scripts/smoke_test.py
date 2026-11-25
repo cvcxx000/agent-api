@@ -525,7 +525,7 @@ check("video config saved", (body.get("video") or {}).get("ready") is True and b
 status, body = jcall("GET", "/api/auth/status", token=None)
 check("auth 初始状态可读", status == 200 and body.get("users") == 0 and body.get("setup_needed") is True, str(body)[:200])
 
-status, body, headers = hcall("POST", "/api/auth/register", {"email": "smoke@example.com", "password": "SmokePass!2026", "name": "Smoke"})
+status, body, headers = hcall("POST", "/api/auth/register", {"email": "smoke@example.com", "password": "SmokePass!2026", "name": "Smoke", "agree": True})
 cookie = cookie_of(headers)
 check("注册第一个账号（owner + 恢复码）",
       status == 200 and body.get("user", {}).get("role") == "owner" and body.get("recovery_code") and cookie.startswith("agent_auth="),
@@ -817,6 +817,9 @@ try:
     check("商家版：订阅服务是开的", billing.enabled() is True)
     plans = billing.plans()
     check("商家版：默认套餐有 start / pro", {p["id"] for p in plans} >= {"start", "pro"}, str(plans)[:200])
+    check("商家版：兑换码默认关闭，要先确认开启", billing.codes_enabled() is False)
+    billing.set_codes_enabled(True)
+    check("商家版：管理员确认后能开启兑换码", billing.codes_enabled() is True)
     codes = billing.generate_codes("start", 2, "smoke")
     check("商家版：能生成兑换码", len(codes) == 2 and all(c.startswith("AG-") for c in codes), str(codes))
     check("商家版：没订阅时账户是 none", billing.account("usr_smoke").get("status") == "none", str(billing.account("usr_smoke")))
@@ -877,7 +880,7 @@ finally:
 
 for asset in ("/ui", "/ui/app.css", "/ui/core.js", "/ui/sessions.js", "/ui/canvas.js", "/ui/chat.js",
                "/ui/providers.js", "/ui/settings.js", "/ui/tts.js", "/ui/schedules.js",
-               "/ui/account.js", "/ui/login.js", "/login", "/ui/login.html"):
+               "/ui/account.js", "/ui/login.js", "/ui/setup.js", "/login", "/ui/login.html", "/ui/setup.html", "/setup", "/terms/user", "/terms/merchant"):
     status, _ = call("GET", asset, token=None)
     if status not in (200, 302):
         check("static " + asset, False, str(status))

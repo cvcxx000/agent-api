@@ -22,6 +22,8 @@ _CONTENT_TYPES = {
     "tts.js": "application/javascript; charset=utf-8",
     "schedules.js": "application/javascript; charset=utf-8",
     "login.html": "text/html; charset=utf-8",
+    "setup.html": "text/html; charset=utf-8",
+    "setup.js": "application/javascript; charset=utf-8",
     "login.js": "application/javascript; charset=utf-8",
     "account.js": "application/javascript; charset=utf-8",
 }
@@ -79,6 +81,14 @@ def mount(router) -> None:
 
         return handler
 
+    def terms_page(kind: str):
+        def handler(req, params):
+            from .terms import html
+
+            return Response(200, html(kind), headers={"Cache-Control": "no-cache"}, content_type="text/html; charset=utf-8")
+
+        return handler
+
     def login_page(req, params):
         return Response(
             200,
@@ -89,6 +99,19 @@ def mount(router) -> None:
 
     router.add("GET", "/", page, auth=False)
     router.add("GET", "/ui", page, auth=False)
+    router.add("GET", "/terms/user", terms_page("user"), auth=False)
+    router.add("GET", "/terms/merchant", terms_page("merchant"), auth=False)
+    def setup_page(req, params):
+        return Response(
+            200,
+            _load("setup.html"),
+            headers={"Cache-Control": "no-cache"},
+            content_type="text/html; charset=utf-8",
+        )
+
+    router.add("GET", "/setup", setup_page, auth=False)
+    router.add("GET", "/ui/setup.html", setup_page, auth=False)
+    router.add("GET", "/ui/setup.js", make("setup.js"), auth=False)
     router.add("GET", "/login", login_page, auth=False)
     router.add("GET", "/ui/login.html", login_page, auth=False)
     router.add("GET", "/ui/app.css", make("app.css"), auth=False)

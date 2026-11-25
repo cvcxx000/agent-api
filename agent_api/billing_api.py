@@ -6,8 +6,10 @@ import logging
 from typing import Any
 
 from .deploy import env_locked, mode as deploy_mode, set_mode, status as deploy_status
-from .auth import ForbiddenError
+from .deploy import reset as deploy_reset
+from .auth import ForbiddenError, clear_cookie, cookie_for, totp_verify, verify_password
 from .errors import AppError
+from .policy import set_guest_enabled
 from .server import Request, Response, Router
 
 logger = logging.getLogger("agent.billing.api")
@@ -75,6 +77,7 @@ def mount_billing(router: Router, runtime: Any) -> None:
             "role": role,
             "account": account,
             "plans": service.plans() if service.enabled() else [],
+            "codes_enabled": service.codes_enabled() if service.enabled() else False,
         })
 
     def redeem(request: Request, params: dict[str, str]) -> Response:
@@ -123,6 +126,18 @@ def mount_billing(router: Router, runtime: Any) -> None:
         logger.info("生成了 %d 个兑换码", len(codes))
         return Response(200, {"ok": True, "codes": codes})
 
+    def admin_settings(request: Request, params: dict[str, str]) -> Response:
+        _admin(request)
+        service = _svc(request)
+        if request.method == "GET":
+            return Response(200, {"ok": True, "codes_enabled": service.codes_enabled()})
+        body = request.json()
+        if body.get("codes_enabled") is True and body.get("confirm") is not True:
+            raise AppError("开启兑换码要二次确认：兑换码等于现金，泄露会被别人兑走")
+        value = service.set_codes_enabled(bool(body.get("codes_enabled")))
+        logger.warning("兑换码开关被管理员设为：%s", value)
+        return Response(200, {"ok": True, "codes_enabled": value})
+
     def admin_grant(request: Request, params: dict[str, str]) -> Response:
         _admin(request)
         service = _svc(request)
@@ -134,10 +149,76 @@ def mount_billing(router: Router, runtime: Any) -> None:
         )
         return Response(200, {"ok": True, "account": account})
 
+    def setup_init(request: Request, params: dict[str, str]) -> Response:
+        auth = getattr(request.runtime, "auth", None)
+        if auth is None:
+            raise AppError("账号服务没启动")
+        if auth.accounts():
+            raise ForbiddenError("已经初始化过了；要重来先用管理员账号重置")
+        body = request.json()
+        if body.get("agree") is not True:
+            raise AppError("请先勾选同意《用户协议》和《商家协议》")
+        wanted = str(body.get("mode") or "").strip().lower()
+        current = deploy_mode()
+        if not env_locked() and wanted in ("personal", "merchant") and wanted != current:
+            set_mode(wanted)
+            current = wanted
+        if current == "unset":
+            current = "personal"
+        result = auth.register(
+            {"email": body.get("email"), "password": body.get("password"),
+             "name": body.get("name"), "agree": True},
+            request,
+        )
+        auth.set_runtime_config({"allow_register": bool(body.get("allow_register"))})
+        set_guest_enabled(bool(body.get("guest_enabled")))
+        service = _svc(request)
+        if current == "merchant":
+            service.set_codes_enabled(bool(body.get("codes_enabled")))
+        logger.warning("初始化完成：模式=%s owner=%s", current, result["user"].get("email"))
+        headers = {"Set-Cookie": cookie_for(result["token"]), "Cache-Control": "no-store"}
+        return Response(200, {
+            "ok": True, "mode": current, "user": result["user"],
+            "recovery_code": result.get("recovery_code"), "redirect": "/ui",
+        }, headers=headers)
+
+    def setup_reset(request: Request, params: dict[str, str]) -> Response:
+        auth = getattr(request.runtime, "auth", None)
+        if auth is None or not auth.enabled():
+            raise AppError("账号体系没开，没什么可重置的")
+        ident = auth.require(request)
+        if str(ident.get("role") or "") != "owner":
+            raise ForbiddenError("只有管理员（owner）能重置")
+        body = request.json()
+        owner = next((u for u in auth.users() if u.get("id") == ident.get("user_id")), None)
+        if owner is None or not verify_password(str(body.get("password") or ""), owner.get("password")):
+            raise ForbiddenError("管理员密码不对")
+        if str(body.get("phrase") or "").strip().upper() != "RESET":
+            raise AppError("确认词要输入 RESET（大写）")
+        if owner.get("totp_enabled"):
+            step = totp_verify(str(owner.get("totp_secret") or ""), str(body.get("totp") or ""))
+            if step is None:
+                raise ForbiddenError("这个管理员开了两步验证，要填 6 位验证码才能重置")
+        service = getattr(request.runtime, "billing", None)
+        auth.reset()
+        if service is not None:
+            service.reset()
+        from .policy import reset as policy_reset
+
+        policy_reset()
+        deploy_reset()
+        logger.warning("管理员 %s 重置了账号与配置", owner.get("email"))
+        return Response(200, {"ok": True, "redirect": "/setup"},
+                        headers={"Set-Cookie": clear_cookie(), "Cache-Control": "no-store"})
+
     router.add("GET", "/api/setup/status", setup_status, auth=False)
+    router.add("POST", "/api/setup/init", setup_init, auth=False)
+    router.add("POST", "/api/setup/reset", setup_reset, auth=True)
     router.add("POST", "/api/setup/mode", setup_mode, auth=False)
     router.add("GET", "/api/billing/me", me, auth=True)
     router.add("POST", "/api/billing/redeem", redeem, auth=True)
+    router.add("GET", "/api/billing/admin/settings", admin_settings, auth=True)
+    router.add("POST", "/api/billing/admin/settings", admin_settings, auth=True)
     router.add("GET", "/api/billing/admin/overview", admin_overview, auth=True)
     router.add("POST", "/api/billing/admin/plans", admin_plan, auth=True)
     router.add("GET", "/api/billing/admin/codes", admin_codes, auth=True)

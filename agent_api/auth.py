@@ -64,8 +64,12 @@ def _env_int(name: str, default: int, lo: int = 1, hi: int = 10**9) -> int:
 
 
 def guest_enabled() -> bool:
-    raw = (os.getenv("GUEST_ENABLED") or "1").strip().lower()
-    return raw not in {"0", "false", "off", "no"}
+    raw = (os.getenv("GUEST_ENABLED") or "").strip().lower()
+    if raw:
+        return raw not in {"0", "false", "off", "no"}
+    from .policy import guest_enabled as policy_guest_enabled
+
+    return policy_guest_enabled()
 
 
 def guest_ttl_hours() -> int:
@@ -245,6 +249,23 @@ class AuthService:
             self._save(data)
             logger.info("账号库里没有 owner，把最早注册的 %s 提成 owner", oldest.get("email"))
         return data
+
+    def reset(self) -> None:
+        """清空账号库（账号、会话、恢复码、API 密钥、Google 配置一起清）。"""
+        with self._lock:
+            try:
+                self.path.unlink()
+            except OSError:
+                pass
+
+    def set_runtime_config(self, values: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            data = self._load()
+            cfg = data.setdefault("config", {})
+            if "allow_register" in values:
+                cfg["allow_register"] = bool(values.get("allow_register"))
+            self._save(data)
+            return dict(cfg)
 
     def _save(self, data: dict[str, Any]) -> None:
         path = self.path
@@ -457,6 +478,8 @@ class AuthService:
         return token
 
     def register(self, body: dict[str, Any], request: Any) -> dict[str, Any]:
+        if body.get("agree") is not True:
+            raise AppError("注册前请先勾选同意《用户协议》和《商家协议》")
         email = _valid_email(str(body.get("email") or ""))
         password = str(body.get("password") or "")
         name = str(body.get("name") or "").strip()[:40] or email.split("@")[0]
@@ -474,6 +497,8 @@ class AuthService:
                 "email": email,
                 "name": name,
                 "role": "owner" if not real_users else "user",
+                "terms_version": str(body.get("terms_version") or "2026-11"),
+                "terms_accepted_at": _now(),
                 "password": hash_password(password),
                 "google_sub": "",
                 "google_email": "",
@@ -1162,6 +1187,8 @@ class AuthService:
                 "email": email,
                 "name": (name.strip()[:40] or email.split("@")[0]),
                 "role": "owner" if not [u for u in data["users"] if not u.get("guest")] else "user",
+                "terms_version": "2026-11",
+                "terms_accepted_at": _now(),
                 "password": None,
                 "google_sub": sub,
                 "google_email": email,

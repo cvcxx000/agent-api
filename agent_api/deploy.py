@@ -45,6 +45,13 @@ def status() -> dict[str, Any]:
     return {"mode": mode(), "env_locked": env_locked(), "file": str(_FILE)}
 
 
+def reset() -> None:
+    try:
+        _FILE.unlink()
+    except OSError:
+        pass
+
+
 def set_mode(value: str) -> str:
     mode_value = str(value or "").strip().lower()
     if mode_value not in ("personal", "merchant"):

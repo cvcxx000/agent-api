@@ -114,8 +114,25 @@ async function showAccount(){
     }
 
     if (me.role === 'owner'){
+      w.appendChild(el('div', 'sect', '商家后台 · 兑换码开关'));
+      const codesOn = !!billing.codes_enabled;
+      const stRow = el('div', 'kv');
+      stRow.appendChild(el('b', '', codesOn ? '兑换码：已开启' : '兑换码：未开启'));
+      stRow.appendChild(el('span', '', '一个码只能兑一次，谁先兑谁得；同一个人可以用多张码续期'));
+      w.appendChild(stRow);
+      const toggle = mini(codesOn ? '关闭兑换码' : '开启兑换码', codesOn ? 'danger' : '');
+      w.appendChild(toggle);
+      toggle.addEventListener('click', async () => {
+        if (!codesOn && !confirm('开启后，任何拿到兑换码的人都能兑换。码等于现金，泄露就会被别人兑走；一个码只能兑一次。确认开启？')) return;
+        if (codesOn && !confirm('关闭后用户不能再用码兑换，已经开通的订阅不受影响。确认关闭？')) return;
+        try{
+          await apiPost('/api/billing/admin/settings', { codes_enabled: !codesOn, confirm: true });
+          showAccount();
+        }catch (e){ alert(e.message); }
+      });
+
       w.appendChild(el('div', 'sect', '商家后台 · 发兑换码'));
-      w.appendChild(el('div', 'desc', '选套餐、填数量，生成后只显示这一次，先复制再发人。'));
+      w.appendChild(el('div', 'desc', codesOn ? '选套餐、填数量，生成后只显示这一次，先复制再发人。' : '兑换码还没开启：先点上面的「开启兑换码」，再生成。'));
       const genPlan = document.createElement('select');
       (billing.plans || []).forEach(plan => {
         const opt = document.createElement('option');
@@ -262,6 +279,24 @@ async function showAccount(){
       w.appendChild(row);
     });
   }catch (e){ w.appendChild(el('div', 'desc', '读设备列表失败：' + e.message)); }
+
+  if (me.role === 'owner'){
+    w.appendChild(el('div', 'sect', '初始化 / 重置'));
+    w.appendChild(el('div', 'desc', '会删除所有账号、订阅、模式和权限配置，回到初始化页；会话和 workspace 里的文件保留。要清文件请自己去删目录。'));
+    const reset = mini('重置这台设备', 'danger');
+    w.appendChild(reset);
+    reset.addEventListener('click', async () => {
+      const pwd = prompt('输入管理员密码');
+      if (!pwd) return;
+      const phrase = prompt('再输入 RESET（大写）确认，这一步不可撤销');
+      if (!phrase) return;
+      const totp = prompt('两步验证 6 位码（没开就留空）') || '';
+      try{
+        await apiPost('/api/setup/reset', { password: pwd, phrase: phrase.trim(), totp: totp.trim() });
+        location.href = '/setup';
+      }catch (e){ alert(e.message); }
+    });
+  }
 
   const logout = mini('退出登录');
   logout.addEventListener('click', async () => {

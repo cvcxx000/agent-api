@@ -78,6 +78,7 @@ class BillingService:
         data.setdefault("plans", [dict(p) for p in DEFAULT_PLANS])
         data.setdefault("codes", [])
         data.setdefault("accounts", {})
+        data.setdefault("settings", {"codes_enabled": False})
         self._cache = data
         return data
 
@@ -122,6 +123,8 @@ class BillingService:
         plan = next((p for p in self.plans() if p.get("id") == plan_id), None)
         if plan is None:
             raise AppError(f"没有这个套餐：{plan_id}")
+        if not self.codes_enabled():
+            raise AppError("兑换码还没开启：先在商家后台确认开启，再生成")
         count = max(1, min(int(count or 1), 500))
         raw_codes: list[str] = []
         with self._lock:
@@ -190,10 +193,30 @@ class BillingService:
             raise SubscriptionQuota("这个订阅周期的消息额度用完了：续费后额度会累加")
         return account
 
+    def codes_enabled(self) -> bool:
+        return bool(self._load().get("settings", {}).get("codes_enabled"))
+
+    def set_codes_enabled(self, value: bool) -> bool:
+        with self._lock:
+            data = self._load()
+            data.setdefault("settings", {})["codes_enabled"] = bool(value)
+            self._save(data)
+        return bool(value)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._cache = None
+            try:
+                self._file.unlink()
+            except OSError:
+                pass
+
     def redeem(self, user_id: str, raw_code: str) -> dict[str, Any]:
         code = _norm_code(raw_code)
         if not code:
             raise AppError("兑换码不能为空")
+        if not self.codes_enabled():
+            raise AppError("商家还没开启兑换码：让管理员在「商家后台」里确认开启")
         now = time.time()
         with self._lock:
             data = self._load()
