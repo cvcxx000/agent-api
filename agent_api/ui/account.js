@@ -163,6 +163,36 @@ async function showAccount(){
         }catch (e){ codesOut.textContent = e.message; }
       });
 
+      w.appendChild(el('div', 'sect', '商家后台 · 兑换码记录'));
+      try{
+        const codes = await apiGet('/api/billing/admin/codes?limit=50');
+        const items = codes.codes || [];
+        if (!items.length) w.appendChild(el('div', 'desc', '还没有兑换码。'));
+        items.forEach(item => {
+          const row = el('div', 'kv');
+          const status = item.revoked ? '已作废' : (item.used ? '已使用' : '未使用');
+          row.appendChild(el('b', '', item.prefix + ' · ' + status));
+          row.appendChild(el('span', '', (item.plan_id || '') + ' · ' + (item.created || '') + (item.used_by ? (' · 使用者 ' + String(item.used_by).slice(-6)) : '') + (item.note ? (' · ' + item.note) : '')));
+          const act = mini(item.used ? '回滚并收回订阅' : (item.revoked ? '恢复为未使用' : '作废'), item.used ? 'danger' : '');
+          act.addEventListener('click', async () => {
+            if (item.used){
+              if (!confirm('回滚这张码会同时收回使用者的整份订阅（他如果还兑过别的码也会一起没），然后把码改回未使用。确认？')) return;
+              try{ await apiPost('/api/billing/admin/codes/reset', { id: item.id, revoke_account: true }); showAccount(); }
+              catch (e){ alert(e.message); }
+              return;
+            }
+            if (!item.revoked && !confirm('作废后这个码不能再兑换，已开通的订阅不受影响。确认？')) return;
+            try{
+              if (item.revoked) await apiPost('/api/billing/admin/codes/reset', { id: item.id, revoke_account: false });
+              else await apiPost('/api/billing/admin/codes/revoke', { id: item.id });
+              showAccount();
+            }catch (e){ alert(e.message); }
+          });
+          row.appendChild(act);
+          w.appendChild(row);
+        });
+      }catch (e){ w.appendChild(el('div', 'desc', '读取兑换码失败：' + e.message)); }
+
       w.appendChild(el('div', 'sect', '商家后台 · 套餐'));
       (billing.plans || []).forEach(plan => {
         w.appendChild(el('div', 'desc', plan.id + ' · ' + plan.name + ' · ' + plan.days + ' 天 · ' + plan.messages + ' 条 · ¥' + (plan.price_cents / 100) + ' · ' + plan.storage_mb + 'MB'));
@@ -197,8 +227,19 @@ async function showAccount(){
         const ov = await apiGet('/api/billing/admin/overview');
         (ov.accounts || []).forEach(u => {
           const a = u.account || {};
-          const line = (u.email || u.name || u.id) + ' · ' + (a.status || 'none') + ' · ' + (a.plan_name || '无套餐') + ' · 剩 ' + (a.remaining_messages || 0) + ' 条';
-          w.appendChild(el('div', 'desc', line));
+          const row = el('div', 'kv');
+          row.appendChild(el('b', '', u.email || u.name || u.id));
+          row.appendChild(el('span', '', (a.status || 'none') + ' · ' + (a.plan_name || '无套餐') + ' · 剩 ' + (a.remaining_messages || 0) + ' 条'));
+          if (a.status && a.status !== 'none'){
+            const off = mini('清空订阅', 'danger');
+            off.addEventListener('click', async () => {
+              if (!confirm('清空 ' + (u.email || u.id) + ' 的整份订阅？他需要重新兑换才能用。')) return;
+              try{ await apiPost('/api/billing/admin/account/reset', { user_id: u.id }); showAccount(); }
+              catch (e){ alert(e.message); }
+            });
+            row.appendChild(off);
+          }
+          w.appendChild(row);
         });
       }catch (e){ w.appendChild(el('div', 'desc', '读取会员失败：' + e.message)); }
     }

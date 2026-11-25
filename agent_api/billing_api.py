@@ -138,6 +138,34 @@ def mount_billing(router: Router, runtime: Any) -> None:
         logger.warning("兑换码开关被管理员设为：%s", value)
         return Response(200, {"ok": True, "codes_enabled": value})
 
+    def admin_code_action(action: str):
+        def handler(request: Request, params: dict[str, str]) -> Response:
+            _admin(request)
+            service = _svc(request)
+            body = request.json()
+            code_id = str(body.get("id") or "").strip()
+            if not code_id:
+                raise AppError("缺少兑换码 id")
+            if action == "revoke":
+                result = service.revoke_code(code_id)
+            else:
+                result = service.reset_code(code_id, bool(body.get("revoke_account", True)))
+            logger.warning("管理员对兑换码 %s 执行了 %s", code_id, action)
+            return Response(200, {"ok": True, **result})
+
+        return handler
+
+    def admin_account_reset(request: Request, params: dict[str, str]) -> Response:
+        _admin(request)
+        service = _svc(request)
+        body = request.json()
+        uid = str(body.get("user_id") or "").strip()
+        if not uid:
+            raise AppError("缺少 user_id")
+        result = service.reset_account(uid)
+        logger.warning("管理员清空了会员 %s 的订阅", uid)
+        return Response(200, {"ok": True, **result})
+
     def admin_grant(request: Request, params: dict[str, str]) -> Response:
         _admin(request)
         service = _svc(request)
@@ -222,5 +250,8 @@ def mount_billing(router: Router, runtime: Any) -> None:
     router.add("GET", "/api/billing/admin/overview", admin_overview, auth=True)
     router.add("POST", "/api/billing/admin/plans", admin_plan, auth=True)
     router.add("GET", "/api/billing/admin/codes", admin_codes, auth=True)
+    router.add("POST", "/api/billing/admin/codes/revoke", admin_code_action("revoke"), auth=True)
+    router.add("POST", "/api/billing/admin/codes/reset", admin_code_action("reset"), auth=True)
+    router.add("POST", "/api/billing/admin/account/reset", admin_account_reset, auth=True)
     router.add("POST", "/api/billing/admin/codes", admin_codes, auth=True)
     router.add("POST", "/api/billing/admin/grant", admin_grant, auth=True)

@@ -856,6 +856,25 @@ try:
     except SubscriptionRequired:
         check("商家版：到期要续费", True)
 
+    rows = billing.list_codes(50)
+    used = next(c for c in rows if c.get("used"))
+    billing.reset_code(str(used["id"]), revoke_account=True)
+    check("商家版：用过码回滚同时收回订阅", billing.account("usr_smoke").get("status") == "none")
+    acct = billing.redeem("usr_smoke", codes[0])
+    check("商家版：回滚后的码可以重新兑", acct.get("status") == "active")
+    unused = next(c for c in billing.list_codes(50) if not c.get("used") and not c.get("revoked"))
+    billing.revoke_code(str(unused["id"]))
+    try:
+        billing.redeem("usr_smoke", codes[1])
+        check("商家版：作废码不能再兑", False, "作废码兑成功了")
+    except Exception as exc:
+        check("商家版：作废码不能再兑", "作废" in str(exc), str(exc))
+    billing.reset_code(str(unused["id"]), revoke_account=False)
+    acct = billing.redeem("usr_smoke", codes[1])
+    check("商家版：恢复作废码后能兑", acct.get("remaining_messages", 0) >= 600, str(acct)[:200])
+    billing.reset_account("usr_smoke")
+    check("商家版：管理员能单独清空某个会员的订阅", billing.account("usr_smoke").get("status") == "none")
+
     dummy = SimpleNamespace(data_dir=_mdir)
     a = AuthService(dummy)
     check("商家版：用户能自己注册（注册开关强制开）", a.register_open() is True)

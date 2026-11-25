@@ -57,6 +57,10 @@ def _norm_code(raw: str) -> str:
     return "".join(ch for ch in str(raw or "").upper() if ch.isalnum() or ch == "-")
 
 
+def _code_id(entry: dict[str, Any]) -> str:
+    return str(entry.get("id") or str(entry.get("hash") or "")[:10])
+
+
 class BillingService:
     def __init__(self, data_dir: Path) -> None:
         self._file = Path(data_dir) / "billing.json"
@@ -135,9 +139,10 @@ class BillingService:
                 while any(c.get("hash") == _sha(code) for c in codes):
                     code = _new_code()
                 raw_codes.append(code)
+                digest = _sha(code)
                 codes.append({
-                    "hash": _sha(code), "prefix": code[:7] + "…", "plan_id": plan_id,
-                    "created": time.time(), "used_by": "", "used_at": 0,
+                    "id": digest[:10], "hash": digest, "prefix": code[:7] + "…", "plan_id": plan_id,
+                    "created": time.time(), "used_by": "", "used_at": 0, "revoked": False,
                     "note": str(note or "")[:100],
                 })
             self._save(data)
@@ -150,12 +155,52 @@ class BillingService:
         out = []
         for item in codes[:max(1, min(limit, 200))]:
             out.append({
-                "prefix": item.get("prefix"), "plan_id": item.get("plan_id"),
+                "id": _code_id(item), "prefix": item.get("prefix"), "plan_id": item.get("plan_id"),
                 "created": _fmt_time(item.get("created")),
                 "used": bool(item.get("used_by")), "used_by": item.get("used_by") or "",
-                "used_at": _fmt_time(item.get("used_at")), "note": item.get("note") or "",
+                "used_at": _fmt_time(item.get("used_at")), "revoked": bool(item.get("revoked")),
+                "note": item.get("note") or "",
             })
         return out
+
+    def reset_account(self, user_id: str) -> dict[str, Any]:
+        with self._lock:
+            data = self._load()
+            accounts = data.setdefault("accounts", {})
+            existed = accounts.pop(str(user_id), None) is not None
+            self._save(data)
+        return {"user_id": str(user_id), "cleared": existed}
+
+    def revoke_code(self, code_id: str) -> dict[str, Any]:
+        with self._lock:
+            data = self._load()
+            entry = next((c for c in data.get("codes", []) if _code_id(c) == str(code_id)), None)
+            if entry is None:
+                raise AppError("没有这个兑换码")
+            entry["revoked"] = True
+            entry["revoked_at"] = time.time()
+            self._save(data)
+        return {"id": code_id, "revoked": True}
+
+    def reset_code(self, code_id: str, revoke_account: bool = True) -> dict[str, Any]:
+        """把已用/作废的码改回未使用；默认同时收回兑换人整份订阅，避免一码两次订阅。"""
+        with self._lock:
+            data = self._load()
+            entry = next((c for c in data.get("codes", []) if _code_id(c) == str(code_id)), None)
+            if entry is None:
+                raise AppError("没有这个兑换码")
+            used_by = str(entry.get("used_by") or "")
+            if used_by and not revoke_account:
+                raise AppError("这张码已经被用过：要放回未使用就必须同时收回使用者的订阅，不能只重置码")
+            cleared = False
+            if used_by and revoke_account:
+                accounts = data.setdefault("accounts", {})
+                if used_by in accounts:
+                    accounts.pop(used_by, None)
+                    cleared = True
+            entry.update({"used_by": "", "used_at": 0, "revoked": False})
+            self._save(data)
+        return {"id": code_id, "account_cleared": cleared, "used_by": used_by}
 
     def _plan(self, data: dict[str, Any], plan_id: str) -> dict[str, Any] | None:
         return next((p for p in data.get("plans", []) if p.get("id") == plan_id), None)
@@ -223,6 +268,8 @@ class BillingService:
             entry = next((c for c in data.get("codes", []) if c.get("hash") == _sha(code)), None)
             if entry is None:
                 raise AppError("兑换码不存在")
+            if entry.get("revoked"):
+                raise AppError("这个兑换码已作废：找管理员换一张")
             if entry.get("used_by"):
                 raise AppError("这个兑换码已经被用过了")
             plan = self._plan(data, str(entry.get("plan_id") or ""))
