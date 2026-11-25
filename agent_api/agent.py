@@ -151,6 +151,11 @@ class Agent:
                 "不能派子 Agent、不能用插件 / 定时任务 / Cookie，也不能改任何全局设置。"
                 "Python 与终端" + hint + " 每分钟只能发一条消息、空间 100MB，回答尽量短。"
             )
+        if extra.get("api_client"):
+            system += (
+                "\n\n[API 客户端模式] 请求来自第三方 OpenAI 兼容客户端：工作目录不设 GB 限额，"
+                "但不提供联网搜索工具，搜索由客户端自己负责；不要假装自己搜过网页。"
+            )
         out: list[dict[str, Any]] = [{"role": "system", "content": system}]
         for message in _trim_for_model(self.messages, self.settings.history_limit):
             clean = {k: v for k, v in message.items() if k not in {"reasoning", "attachments"}}

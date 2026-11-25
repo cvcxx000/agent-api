@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import getpass
 import json
 import sys
 import textwrap
@@ -877,6 +878,53 @@ def cmd_open(api: Api, state: dict, path: str) -> None:
     print(c(DIM, "下一句会自动抽文字 + 把前几页转成图片给模型看；发完清空。"))
 
 
+def ensure_terminal_login(api: Api) -> None:
+    """终端默认要密码：没 --token 就必须 /login 登录，不允许匿名直接聊。"""
+    if api.token:
+        return
+    try:
+        status = api.get("/api/auth/status")
+    except SystemExit:
+        return
+    if not status.get("enabled"):
+        return
+    try:
+        api.get("/api/auth/me")
+        return
+    except SystemExit:
+        api.cookie = ""
+        save_cookie(api.base, "")
+
+    if status.get("setup_needed"):
+        print(c(RED, "这台设备还没初始化账号。先打开网页 /setup 设置管理员邮箱和密码，再回来登录。"))
+        raise SystemExit(1)
+
+    print(c(BOLD, "终端需要登录") + c(DIM, "（密码不会回显；开了两步验证会再要 6 位码）"))
+    for _ in range(3):
+        email = input(c(CYAN, "邮箱 › ")).strip()
+        if not email:
+            print(c(RED, "邮箱不能为空"))
+            continue
+        password = getpass.getpass("密码 › ")
+        try:
+            res = api.post("/api/auth/login", {"email": email, "password": password})
+        except (RuntimeError, SystemExit) as exc:
+            print(c(RED, str(exc)))
+            continue
+        if res.get("totp_required"):
+            code = input(c(CYAN, "6 位动态码 › ")).strip()
+            try:
+                res = api.post("/api/auth/login/totp", {"ticket": res.get("ticket"), "code": code})
+            except (RuntimeError, SystemExit) as exc:
+                print(c(RED, str(exc)))
+                continue
+        if api.cookie:
+            print(c(GREEN, "登录成功。"))
+            return
+        print(c(RED, "没收到登录 Cookie：确认服务端 AUTH_MODE 不是 off。"))
+    raise SystemExit("登录失败，终端退出。要免密可用 --token 你的 API 密钥，或在网页 /login 登录。")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="agent-api 终端界面")
     parser.add_argument("--base", default="http://127.0.0.1:8000", help="服务地址")
@@ -894,6 +942,8 @@ def main() -> None:
     except SystemExit as exc:
         print(c(RED, str(exc)))
         return
+
+    ensure_terminal_login(api)
 
     while True:
         try:

@@ -31,6 +31,8 @@ os.environ["SKILLS_DIRS"] = str(ROOT / "skills")
 os.environ["GUEST_QUOTA_MB"] = "1"
 
 import base64  # noqa: E402
+import gzip  # noqa: E402
+import http.client  # noqa: E402
 import zipfile  # noqa: E402
 
 from agent_api import api as api_mod  # noqa: E402
@@ -822,45 +824,58 @@ try:
     billing = BillingService(_mdir)
     check("商家版：订阅服务是开的", billing.enabled() is True)
     plans = billing.plans()
-    check("商家版：默认套餐有 start / pro", {p["id"] for p in plans} >= {"start", "pro"}, str(plans)[:200])
+    check("商家版：默认套餐有免费版 / start / pro", {p["id"] for p in plans} >= {"free", "start", "pro"}, str(plans)[:200])
+    free_plan = next(p for p in plans if p["id"] == "free")
+    pro_plan = next(p for p in plans if p["id"] == "pro")
+    check("免费版：永久 + 每月 400 分 + 1GB", free_plan.get("credits") == 400 and free_plan.get("days") == 0
+          and free_plan.get("monthly_reset") is True and free_plan.get("storage_mb") == 1024, str(free_plan))
+    check("Pro：6000 分", pro_plan.get("credits") == 6000, str(pro_plan))
     check("商家版：兑换码默认关闭，要先确认开启", billing.codes_enabled() is False)
     billing.set_codes_enabled(True)
     check("商家版：管理员确认后能开启兑换码", billing.codes_enabled() is True)
     codes = billing.generate_codes("start", 2, "smoke")
     check("商家版：能生成兑换码", len(codes) == 2 and all(c.startswith("AG-") for c in codes), str(codes))
-    check("商家版：没订阅时账户是 none", billing.account("usr_smoke").get("status") == "none", str(billing.account("usr_smoke")))
-    try:
-        billing.require("usr_smoke")
-        check("商家版：没订阅聊天被 402", False, "require 没报错")
-    except SubscriptionRequired as exc:
-        check("商家版：没订阅聊天被 402", exc.status_code == 402, str(exc))
+    check("商家版：没账号时账户是 none", billing.account("usr_smoke").get("status") == "none", str(billing.account("usr_smoke")))
+    acct = billing.require("usr_smoke")
+    check("免费版：注册/首次使用自动送 400 分", acct.get("status") == "active" and acct.get("plan_id") == "free"
+          and acct.get("remaining_credits") == 400, str(acct)[:240])
     stored = billing.list_codes()[0].get("prefix") or ""
     check("商家版：落盘只留掩码，不留完整码", stored != codes[0] and "…" in stored, stored)
     acct = billing.redeem("usr_smoke", codes[0])
-    check("商家版：兑换码开通套餐", acct.get("status") == "active" and acct.get("remaining_messages") == 300, str(acct)[:240])
+    check("商家版：兑换码开通付费套餐", acct.get("status") == "active" and acct.get("plan_id") == "start"
+          and acct.get("remaining_credits") == 1000, str(acct)[:240])
     try:
         billing.redeem("usr_smoke", codes[0])
         check("商家版：兑换码不能重复用", False, "重复兑换没报错")
     except Exception as exc:
         check("商家版：兑换码不能重复用", "用过" in str(exc), str(exc))
     acct = billing.consume("usr_smoke", 123, 1)
-    check("商家版：聊天扣条数与 token", acct.get("remaining_messages") == 299 and acct.get("used_messages") == 1 and acct.get("tokens_used") == 123, str(acct)[:240])
+    check("积分：123 token 扣 1 分", acct.get("remaining_credits") == 999 and acct.get("used_credits") == 1
+          and acct.get("tokens_used") == 123, str(acct)[:240])
+    acct = billing.consume("usr_smoke", 1500, 1)
+    check("积分：1500 token 向上取整扣 2 分", acct.get("remaining_credits") == 997
+          and acct.get("used_credits") == 3 and acct.get("tokens_used") == 1623, str(acct)[:240])
     data = billing._load()
-    data["accounts"]["usr_smoke"]["remaining_messages"] = 0
+    data["accounts"]["usr_smoke"]["remaining_credits"] = 0
     billing._save(data)
     try:
         billing.require("usr_smoke")
-        check("商家版：条数用完 429", False, "require 没报错")
+        check("积分：用完 429", False, "require 没报错")
     except SubscriptionQuota as exc:
-        check("商家版：条数用完 429", exc.status_code == 429, str(exc))
+        check("积分：用完 429", exc.status_code == 429, str(exc))
     data = billing._load()
     data["accounts"]["usr_smoke"]["expires"] = 1
     billing._save(data)
-    try:
-        billing.require("usr_smoke")
-        check("商家版：到期要续费", False, "require 没报错")
-    except SubscriptionRequired:
-        check("商家版：到期要续费", True)
+    acct = billing.require("usr_smoke")
+    check("付费到期自动回落到免费版 400 分", acct.get("plan_id") == "free" and acct.get("remaining_credits") == 400,
+          str(acct)[:240])
+    data = billing._load()
+    data["accounts"]["usr_smoke"]["remaining_credits"] = 0
+    data["accounts"]["usr_smoke"]["credit_period"] = "2000-01"
+    billing._save(data)
+    acct = billing.account("usr_smoke")
+    check("免费版：每月重置回 400 分", acct.get("remaining_credits") == 400
+          and acct.get("credit_period") == __import__("datetime").datetime.now().strftime("%Y-%m"), str(acct)[:240])
 
     rows = billing.list_codes(50)
     used = next(c for c in rows if c.get("used"))
@@ -877,7 +892,7 @@ try:
         check("商家版：作废码不能再兑", "作废" in str(exc), str(exc))
     billing.reset_code(str(unused["id"]), revoke_account=False)
     acct = billing.redeem("usr_smoke", codes[1])
-    check("商家版：恢复作废码后能兑", acct.get("remaining_messages", 0) >= 600, str(acct)[:200])
+    check("商家版：恢复作废码后能兑", acct.get("remaining_credits", 0) >= 2000, str(acct)[:200])
     billing.reset_account("usr_smoke")
     check("商家版：管理员能单独清空某个会员的订阅", billing.account("usr_smoke").get("status") == "none")
 
@@ -895,6 +910,34 @@ try:
           (not member_path_ok("/api/providers")) and (not member_path_ok("/api/ui/settings"))
           and member_path_ok("/api/ui/upload") and member_path_ok("/api/chat") and member_path_ok("/api/files"),
           "member_path_ok 判定不对")
+
+    from agent_api.tools.base import ToolContext, api_client_tool_error
+    from agent_api.openai_api import _ctx as openai_ctx
+
+    api_ctx = ToolContext(session=None, extra={"api_client": True})
+    check("API 端：不提供联网搜索", "不提供联网搜索" in api_client_tool_error("web_search", api_ctx),
+          api_client_tool_error("web_search", api_ctx))
+    check("API 端：抓网页不受影响", api_client_tool_error("fetch_url", api_ctx) == "")
+    ctx = openai_ctx(None, None, {"role": "user"}, {"storage_mb": 1024})
+    check("API 端：工作目录不套 1GB 限额", ctx.extra.get("quota_mb") == 0 and ctx.extra.get("api_client") is True,
+          str(ctx.extra))
+
+    # 真接口串起来：商家版会员注册 → /api/billing/me 自动免费版 400 → 聊一句扣 1 分
+    status, body, headers = hcall("POST", "/api/auth/register", {
+        "email": "member@example.com", "password": "MemberPass!2026", "name": "会员", "agree": True,
+    })
+    member_cookie = cookie_of(headers)
+    check("商家版：会员能注册", status == 200 and member_cookie.startswith("agent_auth="), str(body)[:200])
+    status, body, _ = hcall("GET", "/api/billing/me", headers={"Cookie": member_cookie})
+    acct = body.get("account") or {}
+    check("商家版：会员一注册就有免费版 400 分", status == 200 and acct.get("plan_id") == "free"
+          and acct.get("remaining_credits") == 400 and acct.get("storage_mb") == 1024, str(acct)[:240])
+    member = next((u for u in runtime.auth.accounts() if u.get("email") == "member@example.com"), {})
+    runtime.billing.consume(str(member.get("id") or ""), 1500, 1)
+    status, body, _ = hcall("GET", "/api/billing/me", headers={"Cookie": member_cookie})
+    acct2 = body.get("account") or {}
+    check("商家版：1500 token 从免费版扣 2 分", status == 200 and acct2.get("remaining_credits") == 398
+          and acct2.get("used_credits") == 2, str(acct2)[:240])
 finally:
     if _old_mode is None:
         os.environ.pop("DEPLOY_MODE", None)
@@ -904,14 +947,38 @@ finally:
     shutil.rmtree(_mdir, ignore_errors=True)
 
 for asset in ("/ui", "/ui/app.css", "/ui/core.js", "/ui/sessions.js", "/ui/canvas.js", "/ui/chat.js",
-               "/ui/providers.js", "/ui/settings.js", "/ui/tts.js", "/ui/schedules.js",
-               "/ui/account.js", "/ui/login.js", "/ui/setup.js", "/login", "/ui/login.html", "/ui/setup.html", "/setup", "/terms/user", "/terms/merchant"):
+               "/ui/providers.js", "/ui/settings.js", "/ui/tts.js", "/ui/schedules.js", "/ui/account.js",
+               "/ui/app.js", "/ui/login.js", "/ui/setup.js", "/login", "/ui/login.html", "/ui/setup.html", "/setup", "/terms/user", "/terms/merchant"):
     status, _ = call("GET", asset, token=None)
     if status not in (200, 302):
         check("static " + asset, False, str(status))
         break
 else:
     check("all ui assets", True)
+
+_conn = http.client.HTTPConnection("127.0.0.1", PORT, timeout=30)
+_conn.request("GET", "/ui/app.js", headers={"Accept-Encoding": "gzip"})
+_resp = _conn.getresponse()
+_raw = _resp.read()
+_headers = {k.lower(): v for k, v in _resp.getheaders()}
+_conn.close()
+_bundle = gzip.decompress(_raw).decode("utf-8") if _headers.get("content-encoding") == "gzip" else _raw.decode("utf-8")
+check("前端 JS 打成一个 app.js", "/* core.js */" in _bundle and "/* account.js */" in _bundle and len(_bundle) > 50000,
+      f"len={len(_bundle)}")
+check("app.js 走 gzip", _headers.get("content-encoding") == "gzip" and len(_raw) < len(_bundle) * 0.6,
+      f"raw={len(_raw)} plain={len(_bundle)} enc={_headers.get('content-encoding')}")
+_conn = http.client.HTTPConnection("127.0.0.1", PORT, timeout=30)
+_conn.request("GET", "/ui/app.css")
+_resp = _conn.getresponse()
+_tag = _resp.getheader("ETag") or ""
+_resp.read()
+_conn.close()
+_conn = http.client.HTTPConnection("127.0.0.1", PORT, timeout=30)
+_conn.request("GET", "/ui/app.css", headers={"If-None-Match": _tag})
+_resp = _conn.getresponse()
+check("静态资源 ETag 304 复用", _resp.status == 304 and bool(_tag), f"status={_resp.status} etag={_tag}")
+_resp.read()
+_conn.close()
 
 
 server.shutdown()

@@ -69,6 +69,8 @@ def mount_billing(router: Router, runtime: Any) -> None:
         ident = _ident(request)
         role = str(ident.get("role") or "")
         uid = str(ident.get("user_id") or "")
+        if service.enabled() and role == "user" and uid:
+            service.ensure_free(uid)
         account = service.account(uid) if uid else {}
         return Response(200, {
             "ok": True,
@@ -101,7 +103,10 @@ def mount_billing(router: Router, runtime: Any) -> None:
         auth = request.runtime.auth
         rows = []
         for user in auth.accounts():
-            account = service.account(str(user.get("id") or ""))
+            uid = str(user.get("id") or "")
+            if str(user.get("role") or "") == "user":
+                service.ensure_free(uid)
+            account = service.account(uid)
             rows.append({
                 "id": user.get("id"), "email": user.get("email"), "name": user.get("name"),
                 "role": user.get("role"), "account": account,
@@ -173,6 +178,7 @@ def mount_billing(router: Router, runtime: Any) -> None:
         account = service.grant(
             str(body.get("user_id") or ""), str(body.get("plan_id") or ""),
             int(body["days"]) if body.get("days") else None,
+            int(body["credits"]) if body.get("credits") else None,
             int(body["messages"]) if body.get("messages") else None,
         )
         return Response(200, {"ok": True, "account": account})

@@ -358,28 +358,18 @@ async function refreshStatus(){
 }
 async function refreshProviderSummary(){
   try{
-    const j = await apiGet('/api/providers');
-    providersCache = j.providers || [];
-    const n = providersCache.length;
-    const on = providersCache.filter(p => p.enabled).length;
-    const cur = (j.current && j.current.model) ? j.current.model : '未配置';
-    $('providerSub').textContent = n + ' 家 · ' + on + ' 家启用 · ' + cur;
-    $('curModel').textContent = (j.current && j.current.base_url)
-      ? (cur + ' @ ' + j.current.base_url) : '未配置';
+    const pub = await apiGet('/api/public/summary');
+    const n = pub.providers || 0;
+    const on = pub.providers_enabled || 0;
+    const cur = (pub.current && pub.current.model) ? pub.current.model : '未配置';
+    $('providerSub').textContent = pub.guest
+      ? '游客模式 · 用设备当前模型'
+      : (pub.member ? '会员模式 · 商家模型 · ' + cur : n + ' 家 · ' + on + ' 家启用 · ' + cur);
+    $('curModel').textContent = (pub.current && pub.current.base_url)
+      ? (cur + ' @ ' + pub.current.base_url) : '未配置';
     const chip = $('modelChip');
-    if (chip){
-      const active = providersCache.find(p => p.is_active);
-      chip.textContent = active ? (active.name + ' · ' + (j.current.model || '')) : '未配置模型';
-    }
+    if (chip) chip.textContent = pub.active_name ? (pub.active_name + ' · ' + cur) : '未配置模型';
   }catch (e){
-    try{
-      const pub = await apiGet('/api/public/summary');
-      $('providerSub').textContent = pub.guest ? '游客模式 · 用设备当前模型' : '读取失败：' + e.message;
-      $('curModel').textContent = (pub.current && pub.current.model) || '未配置';
-      const chip = $('modelChip');
-      if (chip) chip.textContent = (pub.current && pub.current.model) || '未配置模型';
-      return;
-    }catch (e2){ /* 继续报原来的错 */ }
     $('providerSub').textContent = '读取失败：' + e.message;
   }
 }
@@ -428,12 +418,8 @@ function sheetWrap(){
     if (!resp.ok) return;
     const data = await resp.json();
     if (!data.me || !data.me.guest) {
-      if (data.me && data.me.role === 'user') {
-        try{
-          const b = await fetch('/api/billing/me', { credentials: 'same-origin' });
-          const j = await b.json();
-          if (j && j.enabled) document.body.classList.add('member');
-        }catch (e){ /* 非商家版 */ }
+      if (data.me && data.me.role === 'user' && data.me.billing_enabled) {
+        document.body.classList.add('member');
       }
       return;
     }

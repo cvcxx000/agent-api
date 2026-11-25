@@ -1,13 +1,16 @@
-"""商家版订阅：套餐 / 兑换码 / 每账号额度与有效期。
+"""商家版订阅：套餐 / 兑换码 / 每账号积分与有效期。
 
-为什么用兑换码而不是直接接支付宝：没有商户号也能先卖卡；有商户号之后再把
-「支付成功 → 发码」接到同一个 redeem() 上，业务逻辑不用改。
+计费口径：1 积分 = 1000 token，按每次对话累计 token 向上取整，最低扣 1 分。
+免费版永久有效，每月重置 400 积分；付费套餐按积分给额度，商家可自己改。
+兑换码仍然保留：没有商户号也能先卖卡；有商户号之后再把「支付成功 → 发码」
+接到同一个 redeem() 上，业务逻辑不用改。
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 import secrets
 import threading
 import time
@@ -15,14 +18,26 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .config import settings
 from .deploy import is_merchant
 from .errors import AppError
 
 CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+TOKENS_PER_CREDIT = 1000
+FREE_PLAN_ID = "free"
 DEFAULT_PLANS = [
-    {"id": "start", "name": "入门月卡", "days": 30, "messages": 300, "price_cents": 990, "storage_mb": 1024, "note": "适合自己带 Key 的轻量用户"},
-    {"id": "pro", "name": "进阶季卡", "days": 90, "messages": 1500, "price_cents": 2690, "storage_mb": 3072, "note": "更长有效期 + 更大空间"},
+    {
+        "id": "free", "name": "免费版", "days": 0, "credits": 400, "price_cents": 0,
+        "storage_mb": 1024, "monthly_reset": True,
+        "note": "永久有效，每月重置 400 积分；1 积分 = 1000 token",
+    },
+    {
+        "id": "start", "name": "入门月卡", "days": 30, "credits": 1000, "price_cents": 990,
+        "storage_mb": 2048, "monthly_reset": False, "note": "适合自己带 Key 的轻量用户",
+    },
+    {
+        "id": "pro", "name": "进阶季卡", "days": 90, "credits": 6000, "price_cents": 2690,
+        "storage_mb": 5120, "monthly_reset": False, "note": "6000 积分，更长有效期 + 更大空间",
+    },
 ]
 
 
@@ -48,6 +63,10 @@ def _fmt_time(value: Any) -> str:
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts > 0 else ""
 
 
+def _month_key(ts: float | None = None) -> str:
+    return datetime.fromtimestamp(ts or time.time()).strftime("%Y-%m")
+
+
 def _new_code() -> str:
     raw = "".join(secrets.choice(CODE_ALPHABET) for _ in range(8))
     return "AG-" + raw[:4] + "-" + raw[4:]
@@ -59,6 +78,15 @@ def _norm_code(raw: str) -> str:
 
 def _code_id(entry: dict[str, Any]) -> str:
     return str(entry.get("id") or str(entry.get("hash") or "")[:10])
+
+
+def _credits(plan: dict[str, Any]) -> int:
+    """兼容旧套餐：没有 credits 就沿用原来的 messages。"""
+    return max(0, int(plan.get("credits") if plan.get("credits") is not None else plan.get("messages") or 0))
+
+
+def _permanent(plan: dict[str, Any]) -> bool:
+    return plan.get("id") == FREE_PLAN_ID or int(plan.get("days") or 0) <= 0
 
 
 class BillingService:
@@ -79,10 +107,43 @@ class BillingService:
             data = {}
         if not isinstance(data, dict):
             data = {}
-        data.setdefault("plans", [dict(p) for p in DEFAULT_PLANS])
+        data.setdefault("plans", [])
         data.setdefault("codes", [])
         data.setdefault("accounts", {})
         data.setdefault("settings", {"codes_enabled": False})
+
+        # 旧 billing.json 只有 messages；补成积分。免费版缺了就补上，保证注册就有 400 分。
+        plans = data["plans"]
+        existing = {str(p.get("id") or "") for p in plans if isinstance(p, dict)}
+        for plan in plans:
+            if not isinstance(plan, dict):
+                continue
+            if plan.get("credits") is None:
+                plan["credits"] = int(plan.get("messages") or 0)
+            # 旧版默认套餐迁移：start 300 条 → 1000 分，pro 1500 条 → 6000 分。
+            if plan.get("id") == "start" and int(plan.get("credits") or 0) == 300:
+                plan["credits"] = 1000
+                plan["storage_mb"] = 2048
+            if plan.get("id") == "pro" and int(plan.get("credits") or 0) == 1500:
+                plan["credits"] = 6000
+                plan["storage_mb"] = 5120
+            plan.setdefault("monthly_reset", plan.get("id") == FREE_PLAN_ID)
+            plan.setdefault("storage_mb", 1024)
+            plan.setdefault("days", 0 if plan.get("id") == FREE_PLAN_ID else 30)
+        for default in DEFAULT_PLANS:
+            if default["id"] not in existing:
+                plans.append(dict(default))
+        plans[:] = [p for p in plans if isinstance(p, dict)]
+        plans.sort(key=lambda p: 0 if p.get("id") == FREE_PLAN_ID else 1)
+
+        # 旧账号只有 remaining_messages；先一次性迁移成积分，避免老用户被当成 0 分。
+        for account in data["accounts"].values():
+            if not isinstance(account, dict):
+                continue
+            if account.get("remaining_credits") is None:
+                account["remaining_credits"] = int(account.get("remaining_messages") or 0)
+            if account.get("used_credits") is None:
+                account["used_credits"] = int(account.get("used_messages") or 0)
         self._cache = data
         return data
 
@@ -103,14 +164,18 @@ class BillingService:
             raise AppError("套餐 id 不能为空")
         name = str(body.get("name") or pid)[:40]
         try:
-            days = max(1, int(body.get("days") or 30))
-            messages = max(0, int(body.get("messages") or 300))
+            default_days = 0 if pid == FREE_PLAN_ID else 30
+            days = max(0, int(body.get("days") if body.get("days") not in (None, "") else default_days))
+            credits = max(0, int(body.get("credits") if body.get("credits") not in (None, "") else body.get("messages") or 300))
             price = max(0, int(body.get("price_cents") or 0))
             storage = max(1, int(body.get("storage_mb") or 1024))
         except (TypeError, ValueError) as exc:
             raise AppError(f"套餐参数不对：{exc}") from exc
-        plan = {"id": pid, "name": name, "days": days, "messages": messages, "price_cents": price,
-                "storage_mb": storage, "note": str(body.get("note") or "")[:100]}
+        plan = {
+            "id": pid, "name": name, "days": days, "credits": credits, "price_cents": price,
+            "storage_mb": storage, "monthly_reset": bool(body.get("monthly_reset")) or pid == FREE_PLAN_ID,
+            "note": str(body.get("note") or "")[:100],
+        }
         with self._lock:
             data = self._load()
             plans = data.setdefault("plans", [])
@@ -120,6 +185,8 @@ class BillingService:
                     break
             else:
                 plans.append(plan)
+            # 免费版始终排在最前面，会员一注册就能看到。
+            plans.sort(key=lambda p: 0 if p.get("id") == FREE_PLAN_ID else 1)
             self._save(data)
         return plan
 
@@ -205,37 +272,123 @@ class BillingService:
     def _plan(self, data: dict[str, Any], plan_id: str) -> dict[str, Any] | None:
         return next((p for p in data.get("plans", []) if p.get("id") == plan_id), None)
 
+    def _free_account(self, user_id: str, plan: dict[str, Any], now: float | None = None) -> dict[str, Any]:
+        now = now or time.time()
+        return {
+            "user_id": str(user_id),
+            "plan_id": FREE_PLAN_ID,
+            "plan_name": str(plan.get("name") or "免费版"),
+            "expires": 0,
+            "remaining_credits": _credits(plan),
+            "used_credits": 0,
+            "tokens_used": 0,
+            "storage_mb": int(plan.get("storage_mb") or 1024),
+            "credit_period": _month_key(now),
+            "updated": now,
+        }
+
+    def ensure_free(self, user_id: str) -> dict[str, Any]:
+        """正式会员没有付费订阅时，自动给免费版；已过期的付费订阅也回落到免费版。"""
+        if not self.enabled() or not str(user_id or ""):
+            return {}
+        now = time.time()
+        with self._lock:
+            data = self._load()
+            free_plan = self._plan(data, FREE_PLAN_ID)
+            if free_plan is None:
+                return {}
+            accounts = data.setdefault("accounts", {})
+            account = dict(accounts.get(str(user_id)) or {})
+            plan = self._plan(data, str(account.get("plan_id") or "")) or {}
+            expired_paid = (
+                account and plan.get("id") != FREE_PLAN_ID
+                and float(account.get("expires") or 0) > 0
+                and float(account.get("expires") or 0) <= now
+            )
+            if not account or not plan or expired_paid:
+                account = self._free_account(str(user_id), free_plan, now)
+                accounts[str(user_id)] = account
+                self._save(data)
+                return dict(account)
+            if plan.get("id") == FREE_PLAN_ID:
+                changed = False
+                if _month_key(now) != str(account.get("credit_period") or ""):
+                    account["remaining_credits"] = _credits(free_plan)
+                    account["used_credits"] = 0
+                    account["credit_period"] = _month_key(now)
+                    changed = True
+                if account.get("remaining_credits") is None:
+                    account["remaining_credits"] = _credits(free_plan)
+                    changed = True
+                account["storage_mb"] = max(int(account.get("storage_mb") or 0), int(free_plan.get("storage_mb") or 1024))
+                if changed:
+                    accounts[str(user_id)] = account
+                    self._save(data)
+        return dict(account) if account else {}
+
     def account(self, user_id: str) -> dict[str, Any]:
         with self._lock:
             data = self._load()
             account = dict(data.get("accounts", {}).get(str(user_id)) or {})
             plan = self._plan(data, str(account.get("plan_id") or "")) or {}
-        now = time.time()
-        expires = float(account.get("expires") or 0)
-        active = bool(account) and expires > now
-        return {
-            "enabled": self.enabled(),
-            "plan_id": account.get("plan_id") or "",
-            "plan_name": account.get("plan_name") or (plan.get("name") or ""),
-            "status": "active" if active else ("expired" if account else "none"),
-            "expires": expires,
-            "expires_at": _fmt_time(expires),
-            "remaining_messages": int(account.get("remaining_messages") or 0),
-            "used_messages": int(account.get("used_messages") or 0),
-            "tokens_used": int(account.get("tokens_used") or 0),
-            "storage_mb": int(account.get("storage_mb") or plan.get("storage_mb") or 0),
-        }
+            now = time.time()
+
+            # 旧数据 remaining_messages → remaining_credits
+            if account and account.get("remaining_credits") is None:
+                account["remaining_credits"] = int(account.get("remaining_messages") or 0)
+            if account and account.get("used_credits") is None:
+                account["used_credits"] = int(account.get("used_messages") or 0)
+
+            # 免费版每月重置：把剩余积分重置回 400，不累计。
+            if account and plan.get("id") == FREE_PLAN_ID and plan.get("monthly_reset"):
+                if _month_key(now) != str(account.get("credit_period") or ""):
+                    account["remaining_credits"] = _credits(plan)
+                    account["used_credits"] = 0
+                    account["credit_period"] = _month_key(now)
+                    account["updated"] = now
+                    accounts = data.setdefault("accounts", {})
+                    accounts[str(user_id)] = account
+                    self._save(data)
+
+            expires = float(account.get("expires") or 0)
+            permanent = bool(account) and (plan.get("id") == FREE_PLAN_ID or expires <= 0)
+            active = bool(account) and (permanent or expires > now)
+            remaining = int(account.get("remaining_credits") or 0)
+            return {
+                "enabled": self.enabled(),
+                "plan_id": account.get("plan_id") or "",
+                "plan_name": account.get("plan_name") or (plan.get("name") or ""),
+                "status": "active" if active else ("expired" if account else "none"),
+                "expires": expires,
+                "expires_at": _fmt_time(expires),
+                "permanent": permanent,
+                "remaining_credits": remaining,
+                "used_credits": int(account.get("used_credits") or 0),
+                "tokens_used": int(account.get("tokens_used") or 0),
+                "storage_mb": int(account.get("storage_mb") or plan.get("storage_mb") or 0),
+                "credit_period": account.get("credit_period") or "",
+                "monthly_reset": bool(plan.get("monthly_reset")),
+                "credits_per_month": _credits(plan) if plan.get("monthly_reset") else 0,
+                "tokens_per_credit": TOKENS_PER_CREDIT,
+                # 兼容旧前端/旧接口字段：1 条 ≈ 1 分，只读展示用
+                "remaining_messages": remaining,
+                "used_messages": int(account.get("used_credits") or 0),
+            }
 
     def require(self, user_id: str) -> dict[str, Any]:
         if not self.enabled():
             return {}
+        self.ensure_free(user_id)
         account = self.account(user_id)
         if account["status"] == "none":
             raise SubscriptionRequired("还没有订阅：在「账号与安全 → 订阅」输入兑换码开通")
         if account["status"] == "expired":
             raise SubscriptionRequired("订阅已到期：续一张兑换码就能继续用，数据不会删")
-        if account["remaining_messages"] <= 0:
-            raise SubscriptionQuota("这个订阅周期的消息额度用完了：续费后额度会累加")
+        if account["remaining_credits"] <= 0:
+            raise SubscriptionQuota(
+                f"本月积分用完了（1 积分 = {TOKENS_PER_CREDIT} token）：免费版每月重置 {account.get('credits_per_month') or 400} 分，"
+                "也可以输入兑换码升级"
+            )
         return account
 
     def codes_enabled(self) -> bool:
@@ -277,15 +430,27 @@ class BillingService:
                 raise AppError("兑换码对应的套餐已经下架")
             accounts = data.setdefault("accounts", {})
             account = dict(accounts.get(str(user_id)) or {})
-            base = max(now, float(account.get("expires") or 0))
+            old_plan = self._plan(data, str(account.get("plan_id") or "")) or {}
+            # 从免费版买付费套餐：付费额度从 0 开始算，不把免费额度叠进去。
+            base_credits = 0 if old_plan.get("id") == FREE_PLAN_ID else int(account.get("remaining_credits") or 0)
+            if _permanent(plan):
+                expires = 0
+            else:
+                base = max(now, float(account.get("expires") or 0)) if old_plan.get("id") != FREE_PLAN_ID else now
+                expires = base + int(plan.get("days") or 0) * 86400
             account.update({
                 "user_id": str(user_id),
                 "plan_id": plan["id"],
                 "plan_name": plan["name"],
-                "expires": base + int(plan["days"]) * 86400,
-                "remaining_messages": int(account.get("remaining_messages") or 0) + int(plan["messages"]),
-                "used_messages": int(account.get("used_messages") or 0),
-                "storage_mb": max(int(account.get("storage_mb") or 0), int(plan["storage_mb"])),
+                "expires": expires,
+                "remaining_credits": base_credits + _credits(plan),
+                "used_credits": int(account.get("used_credits") or 0),
+                "tokens_used": int(account.get("tokens_used") or 0),
+                "storage_mb": max(
+                    int(account.get("storage_mb") or 0) if old_plan.get("id") != FREE_PLAN_ID else 0,
+                    int(plan.get("storage_mb") or 0),
+                ),
+                "credit_period": _month_key(now) if plan.get("monthly_reset") else "",
                 "updated": now,
             })
             accounts[str(user_id)] = account
@@ -295,6 +460,7 @@ class BillingService:
         return self.account(user_id)
 
     def consume(self, user_id: str, tokens: int = 0, messages: int = 1) -> dict[str, Any]:
+        """扣积分：1 积分 = 1000 token，向上取整，最低 1 分。"""
         if not self.enabled():
             return {}
         with self._lock:
@@ -303,33 +469,54 @@ class BillingService:
             account = dict(accounts.get(str(user_id)) or {})
             if not account:
                 return self.account(user_id)
-            account["remaining_messages"] = max(0, int(account.get("remaining_messages") or 0) - max(0, messages))
-            account["used_messages"] = int(account.get("used_messages") or 0) + max(0, messages)
-            account["tokens_used"] = int(account.get("tokens_used") or 0) + max(0, int(tokens))
+            tokens = max(0, int(tokens or 0))
+            cost = max(1, int(math.ceil(tokens / TOKENS_PER_CREDIT))) if tokens > 0 else 1
+            plan = self._plan(data, str(account.get("plan_id") or "")) or {}
+            if plan.get("id") == FREE_PLAN_ID and _month_key() != str(account.get("credit_period") or ""):
+                account["remaining_credits"] = _credits(plan)
+                account["used_credits"] = 0
+                account["credit_period"] = _month_key()
+            account["remaining_credits"] = max(0, int(account.get("remaining_credits") or 0) - cost)
+            account["used_credits"] = int(account.get("used_credits") or 0) + cost
+            account["tokens_used"] = int(account.get("tokens_used") or 0) + tokens
             accounts[str(user_id)] = account
             self._save(data)
         return self.account(user_id)
 
-    def grant(self, user_id: str, plan_id: str, days: int | None = None, messages: int | None = None) -> dict[str, Any]:
+    def grant(
+        self, user_id: str, plan_id: str, days: int | None = None,
+        credits: int | None = None, messages: int | None = None,
+    ) -> dict[str, Any]:
         plan = next((p for p in self.plans() if p.get("id") == plan_id), None)
         if plan is None:
             raise AppError(f"没有这个套餐：{plan_id}")
         now = time.time()
-        add_days = int(days if days is not None else plan["days"])
-        add_messages = int(messages if messages is not None else plan["messages"])
+        add_days = int(days if days is not None else plan.get("days") or 0)
+        add_credits = int(credits if credits is not None else (messages if messages is not None else _credits(plan)))
         with self._lock:
             data = self._load()
             accounts = data.setdefault("accounts", {})
             account = dict(accounts.get(str(user_id)) or {})
-            base = max(now, float(account.get("expires") or 0))
+            old_plan = self._plan(data, str(account.get("plan_id") or "")) or {}
+            base_credits = 0 if old_plan.get("id") == FREE_PLAN_ID else int(account.get("remaining_credits") or 0)
+            if _permanent(plan):
+                expires = 0
+            else:
+                base = max(now, float(account.get("expires") or 0)) if old_plan.get("id") != FREE_PLAN_ID else now
+                expires = base + max(1, add_days) * 86400
             account.update({
                 "user_id": str(user_id),
                 "plan_id": plan["id"],
                 "plan_name": plan["name"],
-                "expires": base + max(1, add_days) * 86400,
-                "remaining_messages": int(account.get("remaining_messages") or 0) + max(0, add_messages),
-                "used_messages": int(account.get("used_messages") or 0),
-                "storage_mb": max(int(account.get("storage_mb") or 0), int(plan["storage_mb"])),
+                "expires": expires,
+                "remaining_credits": base_credits + max(0, add_credits),
+                "used_credits": int(account.get("used_credits") or 0),
+                "tokens_used": int(account.get("tokens_used") or 0),
+                "storage_mb": max(
+                    int(account.get("storage_mb") or 0) if old_plan.get("id") != FREE_PLAN_ID else 0,
+                    int(plan.get("storage_mb") or 0),
+                ),
+                "credit_period": _month_key(now) if plan.get("monthly_reset") else "",
                 "updated": now,
             })
             accounts[str(user_id)] = account

@@ -89,13 +89,18 @@ async function showAccount(){
     if (me.role !== 'owner'){
     const acct = billing.account || {};
     const statusText = { active: '有效', expired: '已到期', none: '未订阅' }[acct.status] || acct.status || '未订阅';
+    const credits = (acct.remaining_credits != null ? acct.remaining_credits : acct.remaining_messages) || 0;
+    const isFree = acct.plan_id === 'free';
     w.appendChild(el('div', 'sect', '订阅'));
     const row = el('div', 'kv');
     row.appendChild(el('b', '', (acct.plan_name || '没有套餐') + ' · ' + statusText));
-    row.appendChild(el('span', '', acct.status === 'active'
-      ? ('到期 ' + acct.expires_at + ' · 剩余 ' + acct.remaining_messages + ' 条 · 空间 ' + acct.storage_mb + 'MB')
+    row.appendChild(el('span', '', statusText === 'active'
+      ? (isFree
+        ? ('永久有效 · 本月剩余 ' + credits + ' 积分（每月重置 ' + (acct.credits_per_month || 400) + ' 分）· 空间 ' + acct.storage_mb + 'MB')
+        : ('到期 ' + acct.expires_at + ' · 剩余 ' + credits + ' 积分 · 空间 ' + acct.storage_mb + 'MB'))
       : '输入兑换码开通，数据不会因为到期被删'));
     w.appendChild(row);
+    w.appendChild(el('div', 'hint2', '1 积分 = 1000 token，按每次对话总 token 向上取整，最低扣 1 分。'));
 
     const code = inputEl('', '兑换码，例如 AG-XXXX-XXXX');
     w.appendChild(code);
@@ -107,7 +112,7 @@ async function showAccount(){
       out.textContent = '兑换中…';
       try{
         const r = await apiPost('/api/billing/redeem', { code: code.value.trim() });
-        out.textContent = '开通成功：' + r.account.plan_name + '，到期 ' + r.account.expires_at + '，剩余 ' + r.account.remaining_messages + ' 条';
+        out.textContent = '开通成功：' + r.account.plan_name + '，到期 ' + (r.account.expires_at || '永久') + '，剩余 ' + r.account.remaining_credits + ' 积分';
         code.value = '';
       }catch (e){ out.textContent = e.message; }
     });
@@ -137,7 +142,7 @@ async function showAccount(){
       (billing.plans || []).forEach(plan => {
         const opt = document.createElement('option');
         opt.value = plan.id;
-        opt.textContent = plan.name + '（' + plan.days + ' 天 / ' + plan.messages + ' 条 / ¥' + (plan.price_cents / 100) + '）';
+        opt.textContent = plan.name + '（' + (plan.days ? plan.days + ' 天' : '永久') + ' / ' + plan.credits + ' 积分 / ¥' + (plan.price_cents / 100) + '）';
         genPlan.appendChild(opt);
       });
       w.appendChild(genPlan);
@@ -195,15 +200,15 @@ async function showAccount(){
 
       w.appendChild(el('div', 'sect', '商家后台 · 套餐'));
       (billing.plans || []).forEach(plan => {
-        w.appendChild(el('div', 'desc', plan.id + ' · ' + plan.name + ' · ' + plan.days + ' 天 · ' + plan.messages + ' 条 · ¥' + (plan.price_cents / 100) + ' · ' + plan.storage_mb + 'MB'));
+        w.appendChild(el('div', 'desc', plan.id + ' · ' + plan.name + ' · ' + (plan.days ? plan.days + ' 天' : '永久') + ' · ' + plan.credits + ' 积分' + (plan.monthly_reset ? '（每月重置）' : '') + ' · ¥' + (plan.price_cents / 100) + ' · ' + plan.storage_mb + 'MB'));
       });
       const pid = inputEl('', '套餐 id，例如 start');
       const pname = inputEl('', '套餐名，例如 入门月卡');
-      const pdays = inputEl('', '有效天数，例如 30');
-      const pmsgs = inputEl('', '可用消息条数，例如 300');
+      const pdays = inputEl('', '有效天数，0 = 永久，例如 30');
+      const pcred = inputEl('', '可用积分，例如 1000');
       const pprice = inputEl('', '价格（元），例如 9.9');
       const pstore = inputEl('', '空间 MB，例如 1024');
-      [pid, pname, pdays, pmsgs, pprice, pstore].forEach(x => w.appendChild(x));
+      [pid, pname, pdays, pcred, pprice, pstore].forEach(x => w.appendChild(x));
       const savePlan = mini('保存 / 新增套餐');
       w.appendChild(savePlan);
       const planOut = el('div', 'out', '');
@@ -214,7 +219,7 @@ async function showAccount(){
           await apiPost('/api/billing/admin/plans', {
             id: pid.value.trim(), name: pname.value.trim(),
             days: parseInt(pdays.value || '30', 10),
-            messages: parseInt(pmsgs.value || '300', 10),
+            credits: parseInt(pcred.value || '1000', 10),
             price_cents: Math.round(parseFloat(pprice.value || '0') * 100),
             storage_mb: parseInt(pstore.value || '1024', 10)
           });
@@ -229,7 +234,7 @@ async function showAccount(){
           const a = u.account || {};
           const row = el('div', 'kv');
           row.appendChild(el('b', '', u.email || u.name || u.id));
-          row.appendChild(el('span', '', (a.status || 'none') + ' · ' + (a.plan_name || '无套餐') + ' · 剩 ' + (a.remaining_messages || 0) + ' 条'));
+          row.appendChild(el('span', '', (a.status || 'none') + ' · ' + (a.plan_name || '无套餐') + ' · 剩 ' + (a.remaining_credits || 0) + ' 积分'));
           if (a.status && a.status !== 'none'){
             const off = mini('清空订阅', 'danger');
             off.addEventListener('click', async () => {

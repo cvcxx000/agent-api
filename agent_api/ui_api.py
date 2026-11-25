@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .deploy import is_merchant
 from .security import active_root
 import os
 
@@ -231,13 +232,21 @@ def mount(router) -> None:
 
     def public_summary(req, params):
         data = provider_store.load(req.runtime.settings)
+        active = data.get("active") or {}
+        providers = data.get("providers") or []
         current = data.get("current") or {}
+        if not current:
+            found = next((p for p in providers if p.get("id") == active.get("provider")), {})
+            current = {"model": active.get("model") or "", "base_url": found.get("base_url") or ""}
         ident = dict(getattr(req, "identity", None) or {})
         return Response(200, {
             "ok": True,
-            "current": {"model": current.get("model") or "", "base_url": current.get("base_url") or ""},
-            "providers": len(data.get("providers") or []),
+            "current": current,
+            "providers": len(providers),
+            "providers_enabled": sum(1 for p in providers if p.get("enabled")),
+            "active_name": next((p.get("name") for p in providers if p.get("id") == active.get("provider")), ""),
             "guest": str(ident.get("role") or "") == "guest",
+            "member": str(ident.get("role") or "") == "user" and is_merchant(),
         })
 
     def ui_upload(req, params):

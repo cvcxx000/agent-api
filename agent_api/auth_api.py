@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import quote
 
 from .auth import AuthService, clear_cookie, cookie_for
+from .deploy import is_merchant
 from .errors import AppError
 from .server import Request, Response, Router
 from .security import AuthError
@@ -38,10 +39,11 @@ def _me(request: Request) -> dict[str, Any]:
     if ident is None:
         raise AuthError("未登录")
     if ident.get("via") == "token":
-        return {"me": {"id": "", "email": "", "name": "API Token", "role": "admin", "keys": []},
+        return {"me": {"id": "", "email": "", "name": "API Token", "role": "admin", "keys": [],
+                       "billing_enabled": is_merchant()},
                 "identity": ident}
     user = auth.me(str(ident.get("user_id") or ""))
-    return {"me": {**user, "via": "cookie"}, "identity": ident}
+    return {"me": {**user, "via": "cookie", "billing_enabled": is_merchant()}, "identity": ident}
 
 
 def _uid(auth: AuthService, ident: dict[str, Any]) -> str:

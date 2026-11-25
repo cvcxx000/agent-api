@@ -142,7 +142,9 @@ def _ctx(runtime: Any, session: Any, ident: dict[str, Any], account: dict[str, A
         extra={
             "guest": False,
             "guest_unlocked": False,
-            "quota_mb": int(account.get("storage_mb") or 0),
+            # API 端的工作目录由客户端自己负责，不套网页端的 GB 限额。
+            "quota_mb": 0,
+            "api_client": True,
             "merchant_member": is_merchant() and str(ident.get("role") or "") == "user",
         },
     )

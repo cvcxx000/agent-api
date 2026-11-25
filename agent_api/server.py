@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import logging
 import re
@@ -263,16 +264,27 @@ def _make_handler(router: Router):
                 self._send(response)
 
         def _send(self, response: Response) -> None:
+            payload = response.payload
+            headers = dict(response.headers)
+            compressible = any(
+                marker in response.content_type
+                for marker in ("text/", "javascript", "json", "markdown", "xml")
+            )
+            accept = (self.headers.get("Accept-Encoding") or "").lower()
+            if compressible and len(payload) >= 1024 and "gzip" in accept:
+                payload = gzip.compress(payload, compresslevel=6)
+                headers["Content-Encoding"] = "gzip"
+                headers["Vary"] = "Accept-Encoding"
             try:
                 self.send_response(response.status)
                 self.send_header("Content-Type", response.content_type)
-                self.send_header("Content-Length", str(len(response.payload)))
+                self.send_header("Content-Length", str(len(payload)))
                 self._cors_headers()
-                for key, value in response.headers.items():
+                for key, value in headers.items():
                     self.send_header(key, value)
                 self.end_headers()
-                if response.payload:
-                    self.wfile.write(response.payload)
+                if payload:
+                    self.wfile.write(payload)
             except (BrokenPipeError, ConnectionResetError):
                 pass
 

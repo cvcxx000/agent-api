@@ -41,6 +41,7 @@ GUEST_BLOCKED_PREFIXES = ("spawn_", "wait_", "cancel_", "plugin_", "schedule_", 
 GUEST_BLOCKED_NAMES = {"spawn_agent", "wait_agent", "list_agents", "cancel_agent"}
 GUEST_UNLOCK_NAMES = {"run_python", "run_shell"}
 MEMBER_NO_EXEC_NAMES = {"run_python", "run_shell"}
+API_CLIENT_NO_SEARCH = {"web_search"}
 
 
 def guest_tool_error(name: str, ctx: ToolContext) -> str:
@@ -59,6 +60,15 @@ def member_tool_error(name: str, ctx: ToolContext) -> str:
         return ""
     if name in MEMBER_NO_EXEC_NAMES:
         return "ERROR: 商家版会员不能在本机跑 Python / 终端（这是共享主机）。文件读写、看图、搜网页、生成媒体都可以"
+    return ""
+
+
+def api_client_tool_error(name: str, ctx: ToolContext) -> str:
+    """第三方 OpenAI 客户端：搜索由客户端自己负责，服务端不替他搜。"""
+    if not ctx.extra.get("api_client"):
+        return ""
+    if name in API_CLIENT_NO_SEARCH:
+        return "ERROR: 这是 API 客户端模式，不提供联网搜索；搜索由客户端自己完成。"
     return ""
 
 
@@ -96,7 +106,7 @@ class ToolRegistry:
         for spec in self._specs.values():
             if spec.requires_spawn and not ctx.allow_spawn:
                 continue
-            if guest_tool_error(spec.name, ctx) or member_tool_error(spec.name, ctx):
+            if guest_tool_error(spec.name, ctx) or member_tool_error(spec.name, ctx) or api_client_tool_error(spec.name, ctx):
                 continue
             out.append(spec)
         return out
@@ -120,7 +130,7 @@ class ToolRegistry:
             return f"ERROR: 未知工具 {name}，可用工具：{', '.join(self._specs)}"
         if spec.requires_spawn and not ctx.allow_spawn:
             return f"ERROR: 当前 Agent 层级（depth={ctx.depth}）不允许再派发子 Agent。"
-        blocked = guest_tool_error(name, ctx) or member_tool_error(name, ctx)
+        blocked = guest_tool_error(name, ctx) or member_tool_error(name, ctx) or api_client_tool_error(name, ctx)
         if blocked:
             return blocked
         try:

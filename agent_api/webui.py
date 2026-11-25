@@ -1,14 +1,21 @@
 """页面服务：/ui 返回 page.html，css / js 作为独立文件给。
 
-页面和资源都不缓存（no-cache），git pull 之后刷新页面即可生效。
-页面本身不带任何第三方依赖，所有 JSON 接口由 ui_api.mount() 挂上。
+页面本身不缓存，静态资源带 ETag，改动后刷新就生效；前端 JS 默认打成一个
+app.js（少 8 个请求），服务端再 gzip，手机端首次加载明显快一截。
 """
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
+
+_BUNDLE_FILES = (
+    "core.js", "sessions.js", "canvas.js", "chat.js",
+    "providers.js", "settings.js", "tts.js", "schedules.js", "account.js",
+)
+_bundle_cache: tuple[tuple[int, int], bytes] | None = None
 
 _CONTENT_TYPES = {
     "page.html": "text/html; charset=utf-8",
@@ -55,6 +62,35 @@ def _load(name: str) -> bytes:
     return (UI_DIR / name).read_bytes()
 
 
+def _bundle() -> bytes:
+    """所有前端 JS 合成一个文件；按 mtime+size 失效，git pull 后自动重建。"""
+    global _bundle_cache
+    stamp = tuple((UI_DIR / name).stat().st_mtime_ns for name in _BUNDLE_FILES)
+    if _bundle_cache is not None and _bundle_cache[0] == stamp:
+        return _bundle_cache[1]
+    parts = []
+    for name in _BUNDLE_FILES:
+        body = _load(name)
+        parts.append(f"\n/* {name} */\n".encode("utf-8") + body + b"\n;\n")
+    raw = b"".join(parts)
+    _bundle_cache = (stamp, raw)
+    return raw
+
+
+def _etag(raw: bytes) -> str:
+    return 'W/"' + hashlib.sha1(raw).hexdigest()[:16] + '"'
+
+
+def _static_response(req, raw: bytes, content_type: str):
+    from .server import Response
+
+    tag = _etag(raw)
+    headers = {"Cache-Control": "no-cache", "ETag": tag, "Vary": "Accept-Encoding"}
+    if (req.header("if-none-match") or "").strip() == tag:
+        return Response(304, b"", headers=headers, content_type=content_type)
+    return Response(200, raw, headers=headers, content_type=content_type)
+
+
 def mount(router) -> None:
     from .server import Response
     from .ui_api import mount as mount_api
@@ -63,51 +99,34 @@ def mount(router) -> None:
         auth = getattr(req.runtime, "auth", None)
         if auth is not None and auth.enabled() and not auth.identity(req):
             return Response(302, None, headers={"Location": "/login"})
-        return Response(
-            200,
-            _load("page.html"),
-            headers={"Cache-Control": "no-cache"},
-            content_type=_CONTENT_TYPES["page.html"],
-        )
+        return _static_response(req, _load("page.html"), _CONTENT_TYPES["page.html"])
 
     def make(name):
         def handler(req, params):
-            return Response(
-                200,
-                _load(name),
-                headers={"Cache-Control": "no-cache"},
-                content_type=_CONTENT_TYPES[name],
-            )
+            return _static_response(req, _load(name), _CONTENT_TYPES[name])
 
         return handler
+
+    def bundle(req, params):
+        return _static_response(req, _bundle(), "application/javascript; charset=utf-8")
 
     def terms_page(kind: str):
         def handler(req, params):
             from .terms import html
 
-            return Response(200, html(kind), headers={"Cache-Control": "no-cache"}, content_type="text/html; charset=utf-8")
+            return _static_response(req, html(kind).encode("utf-8"), "text/html; charset=utf-8")
 
         return handler
 
     def login_page(req, params):
-        return Response(
-            200,
-            _load("login.html"),
-            headers={"Cache-Control": "no-cache"},
-            content_type=_CONTENT_TYPES["login.html"],
-        )
+        return _static_response(req, _load("login.html"), _CONTENT_TYPES["login.html"])
 
     router.add("GET", "/", page, auth=False)
     router.add("GET", "/ui", page, auth=False)
     router.add("GET", "/terms/user", terms_page("user"), auth=False)
     router.add("GET", "/terms/merchant", terms_page("merchant"), auth=False)
     def setup_page(req, params):
-        return Response(
-            200,
-            _load("setup.html"),
-            headers={"Cache-Control": "no-cache"},
-            content_type="text/html; charset=utf-8",
-        )
+        return _static_response(req, _load("setup.html"), "text/html; charset=utf-8")
 
     router.add("GET", "/setup", setup_page, auth=False)
     router.add("GET", "/ui/setup.html", setup_page, auth=False)
@@ -115,6 +134,7 @@ def mount(router) -> None:
     router.add("GET", "/login", login_page, auth=False)
     router.add("GET", "/ui/login.html", login_page, auth=False)
     router.add("GET", "/ui/app.css", make("app.css"), auth=False)
+    router.add("GET", "/ui/app.js", bundle, auth=False)
     router.add("GET", "/ui/core.js", make("core.js"), auth=False)
     router.add("GET", "/ui/sessions.js", make("sessions.js"), auth=False)
     router.add("GET", "/ui/chat.js", make("chat.js"), auth=False)
