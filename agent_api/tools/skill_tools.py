@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from ..config import settings
 from ..errors import ToolError
 from ..utils import truncate
 from .base import ToolContext, ToolRegistry
 
 MAX_SKILL_CHARS = 60_000
-
 
 def register(registry: ToolRegistry, get_library) -> None:
     def list_skills(ctx: ToolContext, args: dict[str, Any]) -> str:
@@ -35,18 +35,33 @@ def register(registry: ToolRegistry, get_library) -> None:
         info = library.get(name)
         if info.name in ctx.session.loaded_skills:
             return f"技能 {info.name} 已在当前会话中载入过，内容见系统提示词。"
-        content = truncate(library.read(name), MAX_SKILL_CHARS, note="skill 内容过长已截断")
+        full = library.read(name)
+        body_limit = max(1000, int(settings.skill_prompt_chars))
+        content = truncate(
+            full,
+            body_limit,
+            note=f"技能全文 {len(full)} 字符，为避免每轮重发只注入前 {body_limit} 字符；"
+            f"剩余内容用 read_skill('{info.name}') 按需读",
+        )
+        current = len(ctx.session.system_prompt or "")
+        room = int(settings.system_max_chars) - current
+        if room < 800:
+            return (
+                f"ERROR: 当前会话系统提示词已有 {current} 字符，接近上限 {settings.system_max_chars}；"
+                f"先用 set_system_prompt 精简，或直接 read_skill('{info.name}') 边读边做。"
+            )
         block = (
             f"\n\n## 已载入技能：{info.name}\n"
             f"> 技能目录：{info.directory}\n"
             f"> 需要执行其中的脚本时，用该目录下的文件（注意该目录可能不在沙箱内，"
             f"不在沙箱内时请先复制进工作区再运行）。\n\n{content}"
         )
-        if len(ctx.session.system_prompt or "") + len(block) > 200_000:
-            raise ToolError("系统提示词过长，无法再载入该 skill")
         ctx.session.append_system_prompt(block, mode="append")
         ctx.session.loaded_skills.append(info.name)
-        return f"OK: 已把 skill《{info.name}》载入当前会话（{len(content)} 字符），后续轮次一直生效。"
+        return (
+            f"OK: 已载入《{info.name}》（注入 {len(content)}/{len(full)} 字符），后续轮次生效；"
+            f"遗漏部分用 read_skill('{info.name}') 读。"
+        )
 
     registry.register(
         "list_skills",

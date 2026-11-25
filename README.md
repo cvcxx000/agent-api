@@ -19,7 +19,7 @@
 | 别人打开我的地址也能用？ | 建了账号就要登录；还支持 Google 登录、给脚本发 API 密钥 |
 | 忘了密码怎么办？ | 用手机上的身份验证器（Google Authenticator）输 6 位码，或用绑定的 Google，或用注册时给的恢复码，不依赖发邮件 |
 | 能用手机上的身份验证器吗？ | 能：账号与安全里点「开始绑定」，扫二维码（或手输密钥），之后登录要密码 + 6 位动态码 |
-| 底部那个「缓存 62% · 8.1k/13.1k」是什么？ | 本会话累计的**提示 token**里有多少走了服务商的 prompt cache（省钱的那部分）。分子=命中缓存，分母=提示 token，悬停能看到生成 token 和调用次数。切会话、刷新页面都会重新算；服务不返回用量（或模型不支持）时显示「缓存 —」，不会瞎编 |
+| 底部那个「本轮 8.1k · 缓存 62%」是什么？ | 这一轮发给模型的**提示 token**，以及其中多少走了服务商的 prompt cache（省钱的那部分）。悬停能看到本轮生成量、本会话累计提示 / 生成 / 调用次数。服务不返回用量（或模型不支持）时显示「缓存 —」，不会瞎编 |
 | 网页上冒出红字 `ConnectionAbortedError: [Errno 103]`？ | 是手机息屏/切后台把连接掐了，不是代码错。现在：服务端每 10 秒发一次心跳、断流时把已收到的内容保留并标注「被截断」、模型流没吐字就断开自动重试 3 次；界面只提示一句「连接断了，再发一次」 |
 | PDF / Word 能读吗？ | 能，而且不是只抓文字：`view_document` 按页抽文字，再把页面渲染成 PNG 挂进上下文，表格、版式、印章、扫描件模型都看得见。默认看前 4 页，`pages="5-8"` 接着看，单次最多 12 页 |
 | Termux 里要装什么？ | 基础功能零依赖。想看 PDF 的页面图，装一句 `pkg install poppler`（顺带得到 `pdftotext`）；想让 Word 也整页转图，再装 `pkg install libreoffice`。不装也能读 Word 文字 |
@@ -306,10 +306,15 @@ python3 scripts/smoke_test.py    # 端到端自检
 | `LLM_MOCK` | `auto` | `auto`=没 Key 用 Mock；`true`/`false` 强制 |
 | `RATE_LIMIT_PER_MIN` | `7` | 上游每分钟请求上限，主/子 Agent 共用；`0`=不限 |
 | `AGENT_MAX_TURNS` | `16` | 单轮最多几次「模型→工具」循环 |
-| `AGENT_HISTORY_LIMIT` | `80` | 发给模型的历史条数上限 |
+| `AGENT_HISTORY_LIMIT` | `80` | 发给模型的历史条数上限（还会再按下面的字符预算裁一次） |
+| `AGENT_HISTORY_CHARS` | `24000` | 历史消息总字符预算，超了从最近的 user 消息往前保留；防止一打开老会话就把上下文打满 |
+| `AGENT_SYSTEM_MAX_CHARS` | `10000` | 系统提示词字符硬上限 |
+| `AGENT_SYSTEM_MAX_TOKENS` | `4000` | 系统提示词 token 硬上限；超了只发头 62% + 尾剩余，并提示模型分段读。老会话里载入过超大 Skill 也会在这里被截住 |
+| `AGENT_SKILL_MAX_CHARS` | `6000` | `load_skill` 最多注入多少字符；剩下的用 `read_skill` 按需读 |
+| `LLM_CONTEXT_TOKENS` | `26000` | 模型上下文窗口；发送前按「上下文 - 最大输出 - 工具 schema」算历史预算。26k 小模型保持默认，128k 模型可调大 |
 | `AGENT_MAX_SUBAGENTS` | `3` | 子 Agent 并发上限 |
 | `AGENT_MAX_SUBAGENT_DEPTH` | `1` | 1 = 子 Agent 不能再派子 Agent |
-| `MAX_TOOL_OUTPUT_CHARS` | `20000` | 单个工具输出回传模型的字数上限 |
+| `MAX_TOOL_OUTPUT_CHARS` | `8000` | 单个工具输出回传模型的字数上限；默认调低是为了别让一次 `read_file` 吃掉半个上下文 |
 | `ENABLE_PYTHON` | `true` | 允许 `run_python` |
 | `ENABLE_SHELL` | **`true`** | 允许 `run_shell`（同权，都在沙箱内）。只想给 Python 就改 false |
 | `PYTHON_TIMEOUT` / `SHELL_TIMEOUT` | `60` / `60` | 单次执行超时（秒，上限 600） |
@@ -673,7 +678,7 @@ description: 把数据文件整理成 Markdown 报告，先校验再下结论
 3. write_file 输出报告到 outputs/
 ```
 
-`load_skill` 把全文追加进当前会话的系统提示词，之后每轮生效。唯一原则：SKILL.md 里写的步骤得能被现有工具执行。
+`load_skill` 只把 SKILL.md 的前 6000 字符注入当前会话的系统提示词（`AGENT_SKILL_MAX_CHARS` 可调），之后每轮生效；更长的 Skill 用 `read_skill` 分段读，避免把长文档每轮重发。唯一原则：SKILL.md 里写的步骤得能被现有工具执行。
 
 ---
 
@@ -777,7 +782,7 @@ agent-api/
 python3 scripts/smoke_test.py
 ```
 
-临时沙箱里跑一遍（当前 **174 项**）：账号体系（注册 / 登录 / 密钥 / 恢复码重置 / 身份验证器 / 锁定）、鉴权、文件读写、路径逃逸、Python 执行与超时、Cookie、Skill 扫描、Mock 对话、运行时改提示词、载入 Skill、3 子 Agent 并发 + 第 4 个拒绝、工作流、SSE 与思考流、token 用量与缓存命中、PDF/Word 抽字与页面渲染、提供商目录/拉模型/切换/清理、搜索与图片视频配置、上传、Markdown 预览越界、游客（创建 / 隔离目录 / 100MB 配额 / 一分钟一条 / 改设置 403 / 解锁码 / 到期清空）、商家版（免费版 400 分每月重置 / 套餐 / 兑换码 / 积分扣费 / 429 / 会员权限 / API 端不搜网页且目录不限额）、app.js 打包 + gzip + ETag、全部前端静态资源。
+临时沙箱里跑一遍（当前 **177 项**）：账号体系（注册 / 登录 / 密钥 / 恢复码重置 / 身份验证器 / 锁定）、鉴权、文件读写、路径逃逸、Python 执行与超时、Cookie、Skill 扫描、Mock 对话、运行时改提示词、载入 Skill、3 子 Agent 并发 + 第 4 个拒绝、工作流、SSE 与思考流、token 用量与缓存命中、长系统提示词 / 长历史裁剪、PDF/Word 抽字与页面渲染、提供商目录/拉模型/切换/清理、搜索与图片视频配置、上传、Markdown 预览越界、游客（创建 / 隔离目录 / 100MB 配额 / 一分钟一条 / 改设置 403 / 解锁码 / 到期清空）、商家版（免费版 400 分每月重置 / 套餐 / 兑换码 / 积分扣费 / 429 / 会员权限 / API 端不搜网页且目录不限额）、app.js 打包 + gzip + ETag、全部前端静态资源。
 
 它自己用随机端口，**正在 8000 跑着服务也能直接跑**（以前会把 `port=0` 当成 8000，直接撞出 `Errno 98 Address already in use`）。
 

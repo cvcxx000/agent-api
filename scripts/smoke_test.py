@@ -428,6 +428,34 @@ try:
 finally:
     provider_mod.active_meta = _orig_meta
 
+# 上下文防爆：长系统提示词 / 长历史都不能整份重发
+_big_sess = runtime.sessions.create(title="上下文上限自检")
+_big_sess.system_prompt = "长" * 50000
+_big_sess.messages = []
+for _i in range(20):
+    _big_sess.messages.append({"role": "user", "content": f"u{_i}" + "x" * 2000})
+    _big_sess.messages.append({"role": "assistant", "content": f"a{_i}"})
+_big_agent = Agent(runtime, _big_sess, ToolContext(session=_big_sess), max_turns=1)
+_big_payload = _big_agent._payload()
+check(
+    "长系统提示词被硬截断（头尾保留）",
+    len(_big_payload[0]["content"]) <= runtime.settings.system_max_chars and "系统提示词过长" in _big_payload[0]["content"],
+    f"len={len(_big_payload[0]['content'])}",
+)
+_user_count = sum(1 for m in _big_payload if m.get("role") == "user")
+check(
+    "长历史按字符预算裁剪",
+    _user_count < 20 and _big_payload[-1]["content"] == "a19",
+    f"user={_user_count} last={_big_payload[-1]['content'][:20]}",
+)
+_ctx_big = ToolContext(session=_big_sess)
+_page = runtime.registry.execute("get_system_prompt", {"offset": 0, "limit": 2000}, _ctx_big)
+check(
+    "get_system_prompt 分段返回，不一次吐 2 万字符",
+    len(_page) < 3000 and "继续读" in _page,
+    f"len={len(_page)}",
+)
+
 _pdf_b64 = base64.b64encode(_pdf.read_bytes()).decode("ascii")
 status, body = jcall(
     "POST", "/api/ui/upload", {"name": "smoke.pdf", "data_url": "data:application/pdf;base64," + _pdf_b64}

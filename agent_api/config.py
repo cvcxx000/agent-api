@@ -108,6 +108,11 @@ class Settings:
     max_subagents: int
     max_subagent_depth: int
     max_output_chars: int
+    system_max_chars: int
+    system_max_tokens: int
+    history_chars: int
+    context_tokens: int
+    skill_prompt_chars: int
     # ---- 代码执行 ----
     python_timeout: int
     shell_timeout: int
@@ -146,7 +151,12 @@ class Settings:
             history_limit=_int("AGENT_HISTORY_LIMIT", 80),
             max_subagents=_int("AGENT_MAX_SUBAGENTS", 3),
             max_subagent_depth=_int("AGENT_MAX_SUBAGENT_DEPTH", 1),
-            max_output_chars=_int("MAX_TOOL_OUTPUT_CHARS", 20000),
+            max_output_chars=_int("MAX_TOOL_OUTPUT_CHARS", 8000),
+            system_max_chars=_int("AGENT_SYSTEM_MAX_CHARS", 10000),
+            system_max_tokens=_int("AGENT_SYSTEM_MAX_TOKENS", 4000),
+            history_chars=_int("AGENT_HISTORY_CHARS", 24000),
+            context_tokens=_int("LLM_CONTEXT_TOKENS", 26000),
+            skill_prompt_chars=_int("AGENT_SKILL_MAX_CHARS", 6000),
             python_timeout=_int("PYTHON_TIMEOUT", 60),
             shell_timeout=_int("SHELL_TIMEOUT", 60),
             enable_python=_bool("ENABLE_PYTHON", True),

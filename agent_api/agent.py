@@ -28,6 +28,47 @@ Emit = Callable[[dict[str, Any]], None]
 _VIEW_RE = re.compile(r"^VIEW_IMAGE:\s*(\S+)\s*$", re.M)
 
 _MAX_INLINE_IMAGE = 4 * 1024 * 1024
+_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]")
+
+
+def estimate_tokens(text: str) -> int:
+    """零依赖粗估：CJK 约 1 字 1 token，其余按 3.5 字符 1 token。"""
+    text = str(text or "")
+    if not text:
+        return 0
+    cjk = len(_CJK_RE.findall(text))
+    other = len(text) - cjk
+    return int(cjk + other / 3.5) + 1
+
+
+def _prefix_for_tokens(text: str, budget: int) -> str:
+    if budget <= 0:
+        return ""
+    if estimate_tokens(text) <= budget:
+        return text
+    low, high = 0, len(text)
+    while low < high:
+        mid = (low + high + 1) // 2
+        if estimate_tokens(text[:mid]) <= budget:
+            low = mid
+        else:
+            high = mid - 1
+    return text[:low]
+
+
+def _suffix_for_tokens(text: str, budget: int) -> str:
+    if budget <= 0:
+        return ""
+    if estimate_tokens(text) <= budget:
+        return text
+    low, high = 0, len(text)
+    while low < high:
+        mid = (low + high + 1) // 2
+        if estimate_tokens(text[-mid:]) <= budget:
+            low = mid
+        else:
+            high = mid - 1
+    return text[-low:] if low else ""
 
 
 @dataclass
@@ -46,6 +87,76 @@ def _trim_for_model(messages: list[dict[str, Any]], limit: int) -> list[dict[str
     while start < len(messages) and messages[start].get("role") != "user":
         start += 1
     return messages[start:] if start < len(messages) else messages[-limit:]
+
+
+def _message_chars(message: dict[str, Any]) -> int:
+    """粗算一条消息占多少字符；图片附件不算，因为 base64 不随历史重复发。"""
+    content = message.get("content")
+    size = len(content) if isinstance(content, str) else len(json.dumps(content, ensure_ascii=False))
+    calls = message.get("tool_calls")
+    if calls:
+        size += len(json.dumps(calls, ensure_ascii=False))
+    return size
+
+
+def _message_tokens(message: dict[str, Any]) -> int:
+    content = message.get("content")
+    text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+    calls = message.get("tool_calls")
+    if calls:
+        text += json.dumps(calls, ensure_ascii=False)
+    return estimate_tokens(text)
+
+
+def _trim_for_context(
+    messages: list[dict[str, Any]], chars: int, tokens: int = 0
+) -> list[dict[str, Any]]:
+    """按字符 / token 预算保留最近的历史，并从 user 消息处切开，避免 tool 结果变成孤儿。"""
+    if (chars <= 0 and tokens <= 0) or not messages:
+        return messages
+    total_chars = 0
+    total_tokens = 0
+    start = len(messages)
+    for index in range(len(messages) - 1, -1, -1):
+        size = _message_chars(messages[index])
+        size_tokens = _message_tokens(messages[index])
+        over_chars = chars > 0 and total_chars + size > chars
+        over_tokens = tokens > 0 and total_tokens + size_tokens > tokens
+        if (over_chars or over_tokens) and start < len(messages):
+            break
+        total_chars += size
+        total_tokens += size_tokens
+        start = index
+    while start < len(messages) and messages[start].get("role") != "user":
+        start += 1
+    if start >= len(messages):
+        # 当前这一轮本身就超预算：退回最近的 user，保证 assistant/tool 配对完整，
+        # 宁可这一轮略超，也不要发一条没有 tool_call 的孤儿 tool 结果给模型。
+        for index in range(len(messages) - 1, -1, -1):
+            if messages[index].get("role") == "user":
+                return messages[index:]
+        return messages[-1:]
+    return messages[start:]
+
+
+def _fit_system(text: str, limit_chars: int, limit_tokens: int = 0) -> str:
+    """系统提示词硬上限：保留头尾，避免整份长 Skill 每一轮都重发。"""
+    text = text or ""
+    original_len = len(text)
+    if limit_chars > 0:
+        text = text[:limit_chars]
+    if limit_tokens <= 0 or estimate_tokens(text) <= limit_tokens:
+        return text
+    note_len = 220
+    body = max(0, limit_tokens - note_len)
+    head = _prefix_for_tokens(text, int(body * 0.62))
+    tail = _suffix_for_tokens(text, body - estimate_tokens(head))
+    return (
+        head
+        + f"\n\n...[系统提示词过长：共 {original_len} 字符，只发头 {len(head)} + 尾 {len(tail)} 字符；"
+        f"完整内容用 get_system_prompt(offset=...) 分段看]...\n\n"
+        + tail
+    )
 
 
 _MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
@@ -69,6 +180,7 @@ class Agent:
         self.cancel_event = cancel_event
         self._emit_sink: Emit | None = None
         self._warned_vision = False
+        self._warned_context = False
         try:
             self.vision = bool(provider_store.active_meta(self.settings).get("vision"))
         except Exception:  # noqa: BLE001 - 读不到就按不支持图片处理
@@ -140,7 +252,7 @@ class Agent:
                 return parts
         return str(message.get("content") or "")
 
-    def _payload(self) -> list[dict[str, Any]]:
+    def _payload(self, tools: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         system = self.session.system_prompt
         extra = dict(getattr(self.ctx, "extra", None) or {})
         if extra.get("guest"):
@@ -156,8 +268,21 @@ class Agent:
                 "\n\n[API 客户端模式] 请求来自第三方 OpenAI 兼容客户端：工作目录不设 GB 限额，"
                 "但不提供联网搜索工具，搜索由客户端自己负责；不要假装自己搜过网页。"
             )
+
+        tools_tokens = estimate_tokens(json.dumps(tools, ensure_ascii=False)) if tools else 0
+        available = 0
+        if self.settings.context_tokens > 0:
+            available = self.settings.context_tokens - self.settings.llm_max_tokens - tools_tokens
+            available = max(1500, available)
+        system_budget = self.settings.system_max_tokens
+        if available:
+            system_budget = min(system_budget, max(800, int(available * 0.4)))
+        system = _fit_system(system, self.settings.system_max_chars, system_budget)
+        history_tokens = max(1200, available - estimate_tokens(system)) if available else 0
         out: list[dict[str, Any]] = [{"role": "system", "content": system}]
-        for message in _trim_for_model(self.messages, self.settings.history_limit):
+        history = _trim_for_model(self.messages, self.settings.history_limit)
+        history = _trim_for_context(history, self.settings.history_chars, history_tokens)
+        for message in history:
             clean = {k: v for k, v in message.items() if k not in {"reasoning", "attachments"}}
             if clean.get("role") == "user":
                 clean["content"] = self._parts_for(message)
@@ -167,7 +292,7 @@ class Agent:
         return out
 
     def _model_step(self, emit: Emit | None, tools: list[dict[str, Any]], turn: int) -> dict[str, Any]:
-        payload = self._payload()
+        payload = self._payload(tools)
         if emit is None or not hasattr(self.runtime.llm, "stream_chat"):
             return self.runtime.llm.chat(payload, tools=tools)
 
@@ -193,6 +318,20 @@ class Agent:
         box["cached"] = int(box.get("cached") or 0) + max(0, min(cached, prompt))
         box["total"] = int(box.get("total") or 0) + int(usage.get("total") or (prompt + completion))
         box["calls"] = int(box.get("calls") or 0) + 1
+        box["last_prompt"] = prompt
+        box["last_completion"] = completion
+        box["last_cached"] = max(0, min(cached, prompt))
+        limit = int(self.settings.context_tokens or 0)
+        if limit and prompt >= int(limit * 0.9) and not self._warned_context:
+            self._warned_context = True
+            self._emit(
+                emit,
+                {
+                    "type": "warning",
+                    "message": f"本轮提示 {prompt} tokens，已到上下文上限 {limit} 的 90%。"
+                    "系统提示词或历史太长：建议新开会话，或把长 Skill 改成按需 read_skill。",
+                },
+            )
         self._emit(emit, {"type": "usage", "turn": turn, "usage": dict(box)})
 
     def run(self, user_text: str, emit: Emit | None = None, attachments: list[dict[str, Any]] | None = None) -> AgentResult:

@@ -200,16 +200,18 @@ function showUsage(u){
   if (!el){ return; }
   const box = lastUsage || {};
   const prompt = Number(box.prompt || 0);
-  const cached = Number(box.cached || 0);
   if (!prompt){
     el.textContent = '缓存 —';
     el.title = '这个模型/服务没返回 token 用量，算不出命中率';
     el.classList.remove('hot');
     return;
   }
-  const rate = Math.round((cached / prompt) * 100);
-  el.textContent = '缓存 ' + rate + '% · ' + fmtTokens(cached) + '/' + fmtTokens(prompt);
-  el.title = '本会话累计：提示 ' + prompt + ' tokens，命中缓存 ' + cached + '，生成 ' + Number(box.completion || 0) +
+  const last = Number(box.last_prompt || 0) || prompt;
+  const lastCached = Number(box.last_cached || 0);
+  const rate = Math.round((lastCached / last) * 100);
+  el.textContent = '本轮 ' + fmtTokens(last) + ' · 缓存 ' + rate + '%';
+  el.title = '本轮提示 ' + last + ' tokens，命中缓存 ' + lastCached + '，生成 ' + Number(box.last_completion || 0) +
+    '；本会话累计提示 ' + prompt + ' tokens，累计生成 ' + Number(box.completion || 0) +
     '，模型调用 ' + Number(box.calls || 0) + ' 次';
   el.classList.toggle('hot', rate >= 50);
 }

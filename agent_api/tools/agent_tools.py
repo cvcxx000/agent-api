@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from ..config import settings
 from ..errors import ToolError
 from ..utils import truncate
 from .base import ToolContext, ToolRegistry
@@ -75,6 +76,16 @@ def register(registry: ToolRegistry, get_runtime) -> None:
         mode = str(args.get("mode") or "replace").lower()
         if mode not in {"replace", "append"}:
             raise ToolError("mode 只能是 replace 或 append")
+        limit = max(1000, int(settings.system_max_chars))
+        if len(prompt) > limit:
+            raise ToolError(
+                f"prompt 太长（{len(prompt)} 字符），单次上限 {limit} 字符；"
+                "请先精简，或拆成多次 append。"
+            )
+        if mode == "append" and len(ctx.session.system_prompt or "") + len(prompt) > limit:
+            raise ToolError(
+                f"追加后系统提示词会超过 {limit} 字符；先用 mode=replace 精简，再追加。"
+            )
         ctx.session.append_system_prompt(prompt, mode=mode)
         get_runtime().sessions.save(ctx.session)
         return (
@@ -83,7 +94,16 @@ def register(registry: ToolRegistry, get_runtime) -> None:
         )
 
     def get_system_prompt(ctx: ToolContext, args: dict[str, Any]) -> str:
-        return truncate(ctx.session.system_prompt or "", 20000)
+        total = len(ctx.session.system_prompt or "")
+        try:
+            offset = max(0, int(args.get("offset") or 0))
+            limit = max(200, min(int(args.get("limit") or 4000), 8000))
+        except (TypeError, ValueError):
+            offset, limit = 0, 4000
+        chunk = (ctx.session.system_prompt or "")[offset : offset + limit]
+        if offset + limit < total:
+            chunk += f"\n\n...[还有 {total - offset - limit} 字符，用 offset={offset + limit} 继续读]"
+        return chunk or f"系统提示词为空（共 {total} 字符）"
 
     def list_tools(ctx: ToolContext, args: dict[str, Any]) -> str:
         return json.dumps(get_runtime().registry.describe(), ensure_ascii=False, indent=2)
@@ -144,8 +164,14 @@ def register(registry: ToolRegistry, get_runtime) -> None:
     )
     registry.register(
         "get_system_prompt",
-        "查看当前会话完整的系统提示词。",
-        {"type": "object", "properties": {}},
+        "分段查看当前会话的系统提示词（默认只给 4000 字符，避免把上下文一次撑爆）。",
+        {
+            "type": "object",
+            "properties": {
+                "offset": {"type": "integer", "description": "从第几个字符开始，默认 0"},
+                "limit": {"type": "integer", "description": "本次最多返回多少字符，默认 4000，上限 8000"},
+            },
+        },
         get_system_prompt,
     )
     registry.register(
