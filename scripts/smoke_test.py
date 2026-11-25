@@ -112,6 +112,12 @@ def jcall(method: str, path: str, body: dict | None = None, token: str | None = 
 status, body = jcall("GET", "/health", token=None)
 check("health", status == 200 and body.get("ok") is True, str(body))
 
+status, body = jcall("GET", "/v1/models")
+check("OpenAI 兼容：GET /v1/models 能列模型", status == 200 and body.get("object") == "list" and body.get("data"), str(body)[:200])
+status, body = jcall("POST", "/v1/chat/completions", {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "兼容层测试"}], "stream": False})
+check("OpenAI 兼容：POST /v1/chat/completions 能回答",
+      status == 200 and body.get("choices") and body["choices"][0].get("message", {}).get("content"), str(body)[:240])
+
 status, body = jcall("GET", "/api/tools")
 tools = {t["name"] for t in body.get("tools", [])}
 expected = {"read_file", "write_file", "run_python", "get_cookie", "spawn_agent", "load_skill", "run_workflow"}

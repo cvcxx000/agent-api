@@ -1,0 +1,251 @@
+"""OpenAI 兼容层：让 ChatBox / Cherry Studio / RikkaHub 这类客户端直接连上来。
+
+只做最小兼容：GET /v1/models、POST /v1/chat/completions（含 stream）。
+请求还是要过账号与订阅闸门：Authorization: Bearer ak_… / X-API-Token。
+"""
+
+from __future__ import annotations
+
+import contextvars
+import json
+import queue
+import threading
+import time
+from typing import Any, Iterable
+
+from .agent import Agent
+from .deploy import is_merchant
+from .errors import AppError
+from .providers import activate, load as load_providers
+from .server import Request, Response, Router, StreamResponse
+from .tools.base import ToolContext
+
+
+def _text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict) and item.get("type") in ("text", "input_text"):
+                parts.append(str(item.get("text") or ""))
+        return "\n".join(x for x in parts if x)
+    return str(content or "")
+
+
+def _messages_to_prompt(messages: Any) -> str:
+    if not isinstance(messages, list) or not messages:
+        raise AppError("messages 不能为空")
+    system, history, last_user = [], [], ""
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "")
+        text = _text(item.get("content"))
+        if not text:
+            continue
+        if role == "system":
+            system.append(text)
+        elif role == "user":
+            if last_user:
+                history.append(("用户", last_user))
+            last_user = text
+        elif role == "assistant":
+            if last_user:
+                history.append(("用户", last_user))
+                last_user = ""
+            history.append(("助手", text))
+    if not last_user:
+        raise AppError("最后一条必须是 user 消息")
+    blocks = []
+    if system:
+        blocks.append("【客户端系统指令】\n" + "\n".join(system))
+    if history:
+        lines = [f"{who}：{text}" for who, text in history[-20:]]
+        blocks.append("【前面的对话】\n" + "\n".join(lines))
+    blocks.append("【当前问题】\n" + last_user)
+    return "\n\n".join(blocks)[:120000]
+
+
+def _models(runtime: Any) -> list[str]:
+    data = load_providers(runtime.settings)
+    out: list[str] = []
+    for provider in data.get("providers") or []:
+        for model in provider.get("models") or []:
+            if model and model not in out:
+                out.append(str(model))
+    env_model = str(getattr(runtime.settings, "llm_model", "") or "")
+    if env_model and env_model not in out:
+        out.append(env_model)
+    active = (data.get("active") or {}).get("model") or ""
+    if active in out:
+        out.remove(active)
+        out.insert(0, active)
+    return out
+
+
+def _pick_model(runtime: Any, requested: str) -> str:
+    model = requested.strip()
+    if not model:
+        data = load_providers(runtime.settings)
+        return str((data.get("active") or {}).get("model") or getattr(runtime.settings, "llm_model", "") or "")
+    data = load_providers(runtime.settings)
+    for provider in data.get("providers") or []:
+        if model in (provider.get("models") or []):
+            try:
+                activate(runtime.settings, str(provider.get("id") or ""), model)
+            except Exception:  # noqa: BLE001 - 切模型失败不该挡住这次请求
+                pass
+            break
+    return model
+
+
+def _ident(runtime: Any, request: Request) -> dict[str, Any]:
+    auth = getattr(runtime, "auth", None)
+    if auth is None or not auth.enabled():
+        return {"user_id": "", "role": "admin"}
+    return auth.require(request) or {}
+
+
+def _gate(runtime: Any, ident: dict[str, Any]) -> dict[str, Any]:
+    if not is_merchant() or getattr(runtime, "billing", None) is None:
+        return {}
+    if str(ident.get("role") or "") != "user":
+        return {}
+    return runtime.billing.require(str(ident.get("user_id") or ""))
+
+
+def _consume(runtime: Any, ident: dict[str, Any], usage: dict[str, Any] | None) -> None:
+    if not is_merchant() or getattr(runtime, "billing", None) is None:
+        return
+    if str(ident.get("role") or "") != "user":
+        return
+    try:
+        runtime.billing.consume(str(ident.get("user_id") or ""), int((usage or {}).get("total") or 0), 1)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _owner(ident: dict[str, Any]) -> str:
+    role = str(ident.get("role") or "")
+    return str(ident.get("user_id") or "") if role == "user" and is_merchant() else ""
+
+
+def _ctx(runtime: Any, session: Any, ident: dict[str, Any], account: dict[str, Any]) -> ToolContext:
+    return ToolContext(
+        session=session,
+        agent_id="openai",
+        depth=0,
+        allow_spawn=True,
+        extra={
+            "guest": False,
+            "guest_unlocked": False,
+            "quota_mb": int(account.get("storage_mb") or 0),
+            "merchant_member": is_merchant() and str(ident.get("role") or "") == "user",
+        },
+    )
+
+
+def _usage(usage: dict[str, Any]) -> dict[str, int]:
+    prompt = int((usage or {}).get("prompt") or 0)
+    completion = int((usage or {}).get("completion") or 0)
+    total = int((usage or {}).get("total") or (prompt + completion))
+    return {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": total}
+
+
+def mount(router: Router, runtime: Any) -> None:
+    def list_models(request: Request, params: dict[str, str]) -> Response:
+        _ident(runtime, request)
+        data = [{"id": m, "object": "model", "created": int(time.time()), "owned_by": "agent-api"}
+                for m in _models(runtime)]
+        return Response(200, {"object": "list", "data": data})
+
+    def chat(request: Request, params: dict[str, str]) -> Response | StreamResponse:
+        body = request.json()
+        ident = _ident(runtime, request)
+        account = _gate(runtime, ident)
+        prompt = _messages_to_prompt(body.get("messages"))
+        requested = str(body.get("model") or "")
+        model = _pick_model(runtime, requested)
+        owner = _owner(ident)
+        session = runtime.sessions.create(
+            title=str(body.get("user") or "外部客户端")[:60] or "外部客户端",
+            owner=owner,
+        )
+        agent = Agent(runtime, session, _ctx(runtime, session, ident, account))
+        created = int(time.time())
+        cid = "chatcmpl-" + session.id.replace("sess_", "")
+        stream = bool(body.get("stream"))
+
+        if not stream:
+            result = agent.run(prompt)
+            _consume(runtime, ident, session.usage)
+            return Response(200, {
+                "id": cid, "object": "chat.completion", "created": created, "model": model,
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": result.content},
+                             "finish_reason": "stop"}],
+                "usage": _usage(session.usage),
+            })
+
+        events: queue.Queue = queue.Queue()
+        sentinel = object()
+        root_context = contextvars.copy_context()
+
+        def worker() -> None:
+            try:
+                result = agent.run(prompt, emit=events.put)
+                _consume(runtime, ident, session.usage)
+                events.put(("final", result.content, dict(session.usage)))
+            except Exception as exc:  # noqa: BLE001
+                events.put(("error", str(exc), {}))
+            finally:
+                events.put(sentinel)
+
+        threading.Thread(target=root_context.run, args=(worker,), name=f"openai-{session.id}", daemon=True).start()
+
+        def gen() -> Iterable[str]:
+            yield "data: " + json.dumps({
+                "id": cid, "object": "chat.completion.chunk", "created": created, "model": model,
+                "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+            }, ensure_ascii=False) + "\n\n"
+            sent = False
+            while True:
+                try:
+                    event = events.get(timeout=15)
+                except queue.Empty:
+                    yield ": ping\n\n"
+                    continue
+                if event is sentinel:
+                    break
+                kind = event[0] if isinstance(event, tuple) else event.get("type")
+                if kind == "content_delta":
+                    text = event[1] if isinstance(event, tuple) else event.get("text", "")
+                    if text:
+                        sent = True
+                        yield "data: " + json.dumps({
+                            "id": cid, "object": "chat.completion.chunk", "created": created, "model": model,
+                            "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}],
+                        }, ensure_ascii=False) + "\n\n"
+                elif kind == "final":
+                    text, usage = event[1], event[2]
+                    if text and not sent:
+                        yield "data: " + json.dumps({
+                            "id": cid, "object": "chat.completion.chunk", "created": created, "model": model,
+                            "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}],
+                        }, ensure_ascii=False) + "\n\n"
+                    yield "data: " + json.dumps({
+                        "id": cid, "object": "chat.completion.chunk", "created": created, "model": model,
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                        "usage": _usage(usage),
+                    }, ensure_ascii=False) + "\n\n"
+                elif kind == "error":
+                    yield "data: " + json.dumps({"error": {"message": event[1], "type": "agent_error"}}, ensure_ascii=False) + "\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamResponse(gen())
+
+    router.add("GET", "/v1/models", list_models, auth=True)
+    router.add("POST", "/v1/chat/completions", chat, auth=True)
+    router.add("POST", "/v1/chat/completions/", chat, auth=True)

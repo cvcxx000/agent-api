@@ -168,6 +168,20 @@ python3 scripts/tui.py --token ak_xxx
 
 **API 密钥和 `API_TOKEN` 的区别**：`API_TOKEN` 是全局管理员钥匙，一个通吃，适合完全信任的脚本；API 密钥是账号自己的，可吊销、能看出是谁在用。
 
+### 接第三方客户端（OpenAI 兼容）
+
+ChatBox / Cherry Studio / RikkaHub 这类客户端只认 OpenAI 协议，先看 `GET /v1/models`，再调 `POST /v1/chat/completions`。服务端现在补了这两条：
+
+- Base URL 填 `http://你的地址:8000/v1`。
+- API Key 填账号里生成的 `ak_…`，或者全局 `API_TOKEN`（请求头自动用 `Authorization: Bearer …`）。
+- 支持 `stream: false` 和 `stream: true`（SSE，最后发 `[DONE]`）。
+- 客户端发来的整段 `messages` 会被压成一段上下文交给 Agent，Agent 在服务端自己调工具；客户端只收到最终文本。
+- 如果客户端报 `404 未知接口：GET /v1/models`，说明它连到了旧版本，`git pull` 重启即可。
+
+```bash
+curl http://127.0.0.1:8000/v1/models -H "Authorization: Bearer ak_你的密钥"
+```
+
 ### 游客试用（临时匿名）
 
 登录页有一行「游客试用（临时匿名，24 小时后自动清空）」，点一下就能用，不用注册。它适合「别人临时想试一下这台设备」的场景：
