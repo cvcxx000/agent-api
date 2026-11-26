@@ -688,9 +688,11 @@ def build_router(runtime: Any) -> Router:
     from .auth_api import mount_auth
     from .billing_api import mount_billing
     from .openai_api import mount as mount_openai
+    from .update_api import mount_update
 
     mount_auth(router, runtime)
     mount_billing(router, runtime)
     mount_openai(router, runtime)
+    mount_update(router, runtime)
 
     return router

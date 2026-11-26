@@ -799,6 +799,43 @@ guest_file = SMOKE / "workspace" / "guests" / gid / "mine.txt"
 check("游客能写自己的目录", status == 200 and guest_file.exists() and guest_file.read_text(encoding="utf-8") == "guest only", str(body)[:200])
 check("游客文件没落到公共根", not (SMOKE / "workspace" / "mine.txt").exists(), "公共根出现 mine.txt")
 
+# ---------------- 自动更新检查 ----------------
+from agent_api import updater  # noqa: E402
+
+_atom = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+<entry><id>tag:github.com,2008:Grit::Commit/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</id>
+<title>新功能：自动检查更新</title><updated>2026-11-26T01:00:00Z</updated>
+<link rel="alternate" href="https://github.com/cvcxx000/agent-api/commit/aaaa"/></entry>
+<entry><id>tag:github.com,2008:Grit::Commit/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb</id>
+<title>修复：一个小问题</title><updated>2026-11-25T01:00:00Z</updated>
+<link rel="alternate" href="https://github.com/cvcxx000/agent-api/commit/bbbb"/></entry>
+</feed>"""
+_entries = updater._parse_feed(_atom)
+check("更新：解析 GitHub Atom 提交源", len(_entries) == 2 and _entries[0]["short"] == "aaaaaaa" and "自动检查更新" in _entries[0]["title"],
+      str(_entries)[:200])
+check("更新：提交摘要只挑标题",
+      "• 新功能：自动检查更新" in updater._summary(_entries + _entries + _entries, False) and "还有 1 个提交" in updater._summary(_entries + _entries + _entries, False),
+      updater._summary(_entries + _entries + _entries, False))
+
+_orig_check = updater.check
+updater.check = lambda force=False: {
+    "ok": True,
+    "available": True,
+    "can_apply": True,
+    "current": {"short": "old0000", "sha": "old"},
+    "remote": {"short": "aaaaaaa", "sha": "aaaa", "title": "新功能：自动检查更新"},
+    "behind": 1,
+    "summary": "• 新功能：自动检查更新",
+    "reason": "",
+}
+try:
+    status, body = jcall("GET", "/api/update/check")
+    check("更新：接口返回新版本与摘要", status == 200 and body.get("available") is True and "自动检查更新" in body.get("summary", ""), str(body)[:240])
+finally:
+    updater.check = _orig_check
+
+
 status, body = jcall("GET", "/api/sessions", token=None)
 status, body, _ = hcall("GET", "/api/sessions", headers={"Cookie": guest_cookie})
 check("游客会话列表是空的（看不到别人的）", status == 200 and body.get("sessions") == [], str(body)[:300])

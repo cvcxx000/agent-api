@@ -13,7 +13,7 @@ UI_DIR = Path(__file__).resolve().parent / "ui"
 
 _BUNDLE_FILES = (
     "core.js", "sessions.js", "canvas.js", "chat.js",
-    "providers.js", "settings.js", "tts.js", "schedules.js", "account.js",
+    "providers.js", "settings.js", "tts.js", "schedules.js", "account.js", "update.js",
 )
 _bundle_cache: tuple[tuple[int, int], bytes] | None = None
 
@@ -28,11 +28,12 @@ _CONTENT_TYPES = {
     "canvas.js": "application/javascript; charset=utf-8",
     "tts.js": "application/javascript; charset=utf-8",
     "schedules.js": "application/javascript; charset=utf-8",
+    "account.js": "application/javascript; charset=utf-8",
+    "update.js": "application/javascript; charset=utf-8",
     "login.html": "text/html; charset=utf-8",
     "setup.html": "text/html; charset=utf-8",
     "setup.js": "application/javascript; charset=utf-8",
     "login.js": "application/javascript; charset=utf-8",
-    "account.js": "application/javascript; charset=utf-8",
 }
 
 _MIME = {

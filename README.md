@@ -26,6 +26,7 @@
 | 能不能出声？ | 有 TTS：`speak_text` 工具 + 网页「语音合成」+ 终端 `/say`，产物是能直接播的音频 |
 | 能不能自己按时干活？ | 有定时任务：cron 表达式到点自动跑一句话或一个工作流，网页/终端/Agent 三处都能建 |
 | 会话都是「无标题」？ | 首轮对话后按首句自动起标题（`_guess_title`），不再是清一色无标题 |
+| GitHub 有新版本会提醒吗？ | 会。网页打开后自动查 `commits.atom`，比本地 HEAD 新就弹「发现新版本」，列出最近 5 条提交摘要；owner / 管理员点「立即更新」执行 `git pull --ff-only`，更新完重启 `python3 run.py` 生效。本地有未提交改动会拒绝自动更新，避免覆盖你的代码 |
 
 ---
 
@@ -79,6 +80,7 @@ termux-wake-lock
 - **会话**：抽屉里列全部会话，标题自动生成，可删
 - **设置**：默认模型、提供商、搜索服务、图片生成、视频生成、Web 服务器、数据备份、引擎与限流
 - **加载速度**：前端 9 个 JS 自动打成一个 `/ui/app.js`，服务端统一 gzip；CSS / JS 带 ETag，刷新时命中 304 不重传，手机端不用再等 9 个串行请求
+- **自动更新**：打开网页自动查 GitHub 提交，发现新版弹窗并概括最近几条提交；owner 点「立即更新」走 `git pull --ff-only`，有本地改动会拒绝
 
 ---
 
@@ -312,6 +314,10 @@ python3 scripts/smoke_test.py    # 端到端自检
 | `AGENT_SYSTEM_MAX_TOKENS` | `4000` | 系统提示词 token 硬上限；超了只发头 62% + 尾剩余，并提示模型分段读。老会话里载入过超大 Skill 也会在这里被截住 |
 | `AGENT_SKILL_MAX_CHARS` | `6000` | `load_skill` 最多注入多少字符；剩下的用 `read_skill` 按需读 |
 | `LLM_CONTEXT_TOKENS` | `26000` | 模型上下文窗口；发送前按「上下文 - 最大输出 - 工具 schema」算历史预算。26k 小模型保持默认，128k 模型可调大 |
+| `UPDATE_REPO` | `cvcxx000/agent-api` | 自动更新检查的 GitHub 仓库；fork 后改成自己的 |
+| `UPDATE_BRANCH` | `main` | 跟哪个分支比 |
+| `UPDATE_CHECK_SECONDS` | `600` | 网页自动检查更新的缓存时间（秒）；GitHub Atom 不占 API 60 次/小时限额 |
+| `UPDATE_FEED_URL` | 空 | 可选：自定义 commits.atom 地址（GitHub 被墙 / 镜像时用） |
 | `AGENT_MAX_SUBAGENTS` | `3` | 子 Agent 并发上限 |
 | `AGENT_MAX_SUBAGENT_DEPTH` | `1` | 1 = 子 Agent 不能再派子 Agent |
 | `MAX_TOOL_OUTPUT_CHARS` | `8000` | 单个工具输出回传模型的字数上限；默认调低是为了别让一次 `read_file` 吃掉半个上下文 |
@@ -782,7 +788,7 @@ agent-api/
 python3 scripts/smoke_test.py
 ```
 
-临时沙箱里跑一遍（当前 **177 项**）：账号体系（注册 / 登录 / 密钥 / 恢复码重置 / 身份验证器 / 锁定）、鉴权、文件读写、路径逃逸、Python 执行与超时、Cookie、Skill 扫描、Mock 对话、运行时改提示词、载入 Skill、3 子 Agent 并发 + 第 4 个拒绝、工作流、SSE 与思考流、token 用量与缓存命中、长系统提示词 / 长历史裁剪、PDF/Word 抽字与页面渲染、提供商目录/拉模型/切换/清理、搜索与图片视频配置、上传、Markdown 预览越界、游客（创建 / 隔离目录 / 100MB 配额 / 一分钟一条 / 改设置 403 / 解锁码 / 到期清空）、商家版（免费版 400 分每月重置 / 套餐 / 兑换码 / 积分扣费 / 429 / 会员权限 / API 端不搜网页且目录不限额）、app.js 打包 + gzip + ETag、全部前端静态资源。
+临时沙箱里跑一遍（当前 **180 项**）：账号体系（注册 / 登录 / 密钥 / 恢复码重置 / 身份验证器 / 锁定）、鉴权、文件读写、路径逃逸、Python 执行与超时、Cookie、Skill 扫描、Mock 对话、运行时改提示词、载入 Skill、3 子 Agent 并发 + 第 4 个拒绝、工作流、SSE 与思考流、token 用量与缓存命中、长系统提示词 / 长历史裁剪、更新检查（Atom 解析 / 提交摘要 / 接口返回）、PDF/Word 抽字与页面渲染、提供商目录/拉模型/切换/清理、搜索与图片视频配置、上传、Markdown 预览越界、游客（创建 / 隔离目录 / 100MB 配额 / 一分钟一条 / 改设置 403 / 解锁码 / 到期清空）、商家版（免费版 400 分每月重置 / 套餐 / 兑换码 / 积分扣费 / 429 / 会员权限 / API 端不搜网页且目录不限额）、app.js 打包 + gzip + ETag、全部前端静态资源。
 
 它自己用随机端口，**正在 8000 跑着服务也能直接跑**（以前会把 `port=0` 当成 8000，直接撞出 `Errno 98 Address already in use`）。
 
