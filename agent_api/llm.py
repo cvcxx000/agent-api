@@ -104,6 +104,7 @@ class BaseLLM:
         tools: list[dict[str, Any]] | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         raise NotImplementedError
 
@@ -114,9 +115,10 @@ class BaseLLM:
         on_event: Any = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """默认实现：不支持流式就退回一次性，把整段当一次 delta 发出去。"""
-        message = self.chat(messages, tools=tools, temperature=temperature, max_tokens=max_tokens)
+        message = self.chat(messages, tools=tools, temperature=temperature, max_tokens=max_tokens, extra=extra)
         if on_event and message.get("reasoning"):
             on_event({"type": "reasoning_delta", "text": message["reasoning"]})
         if on_event and message.get("content"):
@@ -154,6 +156,7 @@ class OpenAICompatibleLLM(BaseLLM):
         tools: list[dict[str, Any]] | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self.settings.llm_model,
@@ -164,6 +167,12 @@ class OpenAICompatibleLLM(BaseLLM):
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+        if extra:
+            if "max_completion_tokens" in extra:
+                payload.pop("max_tokens", None)
+            for key, value in extra.items():
+                if key not in {"model", "messages", "tools", "stream"}:
+                    payload[key] = value
 
         url = f"{self.settings.llm_base_url}/chat/completions"
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -225,6 +234,7 @@ class OpenAICompatibleLLM(BaseLLM):
         on_event: Any = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self.settings.llm_model,
@@ -238,6 +248,12 @@ class OpenAICompatibleLLM(BaseLLM):
             payload["tool_choice"] = "auto"
         if stream_usage_enabled():
             payload["stream_options"] = {"include_usage": True}
+        if extra:
+            if "max_completion_tokens" in extra:
+                payload.pop("max_tokens", None)
+            for key, value in extra.items():
+                if key not in {"model", "messages", "tools", "stream", "stream_options"}:
+                    payload[key] = value
 
         url = f"{self.settings.llm_base_url}/chat/completions"
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -472,6 +488,7 @@ class MockLLM(BaseLLM):
         tools: list[dict[str, Any]] | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         has_tool_result = any(m.get("role") == "tool" for m in messages)
         tool_names = {t.get("function", {}).get("name") for t in (tools or [])}
@@ -507,8 +524,9 @@ class MockLLM(BaseLLM):
         on_event: Any = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        message = self.chat(messages, tools=tools, temperature=temperature, max_tokens=max_tokens)
+        message = self.chat(messages, tools=tools, temperature=temperature, max_tokens=max_tokens, extra=extra)
         reason = "（Mock 模式）先看环境，再决定用不用工具。"
         if on_event:
             on_event({"type": "reasoning_delta", "text": reason})

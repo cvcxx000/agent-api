@@ -120,6 +120,24 @@ status, body = jcall("POST", "/v1/chat/completions", {"model": "gpt-4o-mini", "m
 check("OpenAI 兼容：POST /v1/chat/completions 能回答",
       status == 200 and body.get("choices") and body["choices"][0].get("message", {}).get("content"), str(body)[:240])
 
+class _RecordLLM:
+    def __init__(self):
+        self.messages = None
+    def chat(self, messages, tools=None, temperature=None, max_tokens=None, extra=None):
+        self.messages = messages
+        return {"role": "assistant", "content": "直通OK", "usage": {"prompt": 1, "completion": 1, "total": 2}}
+
+_rec = _RecordLLM()
+_old_llm = runtime.llm
+runtime.llm = _rec
+_msgs = [{"role": "system", "content": "客户端自己的提示词"}, {"role": "user", "content": "原样发过去"}]
+status, body = jcall("POST", "/v1/chat/completions", {"model": runtime.settings.llm_model, "messages": _msgs, "stream": False})
+runtime.llm = _old_llm
+check("纯模型直通：不改写 messages", status == 200 and _rec.messages == _msgs, str(_rec.messages)[:300])
+check("纯模型直通：不注入 Agent 系统提示词", all(
+    not (m.get("role") == "system" and "Agent" in str(m.get("content") or "")) for m in (_rec.messages or [])
+), str(_rec.messages)[:300])
+
 status, body = jcall("GET", "/api/tools")
 tools = {t["name"] for t in body.get("tools", [])}
 expected = {"read_file", "write_file", "run_python", "get_cookie", "spawn_agent", "load_skill", "run_workflow"}
